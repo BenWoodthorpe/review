@@ -152,6 +152,10 @@ sub get_disk_usage {
 			$fsinfo{$filesystem}{Used} = $fields[2];
 			$fsinfo{$filesystem}{Available} = $fields[3];
 			$fsinfo{$filesystem}{PercentUsed} = $fields[4];
+	                if ($fsinfo{$filesystem}{PercentUsed} >= 90) {
+	                        unless ($filesystem =~ /run/) { push @{$sys{DiskAlerts}}, "The '$filesystem' filesystem is $fsinfo{$filesystem}{PercentUsed}% used.\n";}
+	                }
+
 		}
 	}
 }
@@ -197,6 +201,7 @@ sub get_cpu_usage {
 sub get_system_info {
         unless ( -e "/etc/redhat-release" ) { return; }
 	$sys{Hostname} = `hostname`;
+	$sys{Date} = `date "+%B %Y"`;
 	@{$sys{IPAddresses}} = (`ip -o addr show up primary scope global` =~ /inet\s(\d+\.\d+\.\d+\.\d+)/g);
 	$sys{MySQLUptime} = sec2time($stats{Uptime}); 
 	($sys{LastKernelVersion}, $sys{LastUpdateTime}) = split (/ {2,}/, `rpm -q kernel --last | head -n1`);	
@@ -219,10 +224,16 @@ sub get_system_info {
 sub get_backup_info {
 	@{$sys{RootCron}} = `crontab -l 2>/dev/null`;
         foreach(@{$sys{RootCron}}) {
+		next if /^#/;
                 if ($_ =~ /db|mysql|database|backup/) {
                         $sys{BackupCronFound} = "1";
                         chomp($_);
-			push @{$sys{BackupCron}}, $_;
+	                my @arr = split (/\s+/,$_);
+        	        $arr[5]=join(" ",splice(@arr,5));
+                	@{$sys{DaysOfWeek}} = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "Daily");
+                	my ($min, $hour, $dom, $month, $dow, $command) = @arr;
+                	if ($dow =~ /\d/) { $dow = $sys{DaysOfWeek}[$dow]; } else { $dow = $sys{DaysOfWeek}[8]; }
+			push @{$sys{BackupCron}}, sprintf ("%02d:%02d %-10s %-50s\n",$hour,$min,"($dow)",$command);
                 }
         }
 	@{$sys{KnownBackupDirs}} = ('/backups', '/home/backups', '/var/lib/mysql/backups', '/var/backup/db', '/home/dbdumps');
@@ -236,19 +247,33 @@ sub get_backup_info {
 	if (-d "/opt/tivoli") { $sys{TivoliInstalled} = "1"; }
 }
 
+
 sub print_report {
 #
 # System Summary
 #
-	print "\n_________________________ [CogecoPeer1 DBA Report] _________________________\n";
+	print "\n\n_________________________ [CogecoPeer1 DBA Report] _________________________\n\n";
 	print "Version: $version\n";
-	print "Date: \n";
+	print "Date: $sys{Date}\n";
 	print "System uptime: $sys{SystemUptime}\n";
 	print "MySQL uptime: $sys{MySQLUptime}\n";
 	print "Hostname: $sys{Hostname}\n";
 	print "IP addresses: ";
 	foreach(@{$sys{IPAddresses}}) { print "$_  "; }
 	print "\n";
+#
+# Summary action points
+#
+	print "\n[Summary]\n";
+	if (defined $cpu{LoadAverageOverCount}) { print "CPU: The 15min load average was above 75% total utilization on $cpu{LoadAverageOverCount} times in the last $cpu{TotalSarLogs} days.\n"; }
+	if ($mem{MySQLUsedPerc} >= 95) { print "Memory: MySQL is configured to use up to $mem{MySQLUsedPerc}% of the system memory. This can cause the system to swap to disk & may degrade performance\n"; }
+	if ($mem{SwapFreePerc} <= 90) { print  "Memory: The system is using $mem{SwapUsed} of swap. This can dramatically reduce MySQL performance.\n"; }
+	foreach(@{$sys{DiskAlerts}}) { print "Disk: $_\n"; }
+	if ($sys{CP1Updates} eq 1) { print "System: Automatic updating is disabled. You can enable this by installing the 'yum-p1mh-autoupdates' package.\n"; }
+	if ($sys{KernelInUse} ne $sys{LastKernelVersion}) { print "System: A kernel update requires a reboot.\n"; }
+	unless ($sys{BackupCronFound}) { print "Backups: No scheduled backup was detected.\n"; }
+
+
 #
 # CPU usage
 #
@@ -296,13 +321,10 @@ sub print_report {
         printf("%5s %5s %5s %5s %-60s\n", "Size","Used","Avail","Use%","Mounted on");
         foreach my $filesystem (keys %fsinfo) {
                 printf("%5s %5s %5s %5s %-60s\n", $fsinfo{$filesystem}{TotalSize},$fsinfo{$filesystem}{Used},$fsinfo{$filesystem}{Available},$fsinfo{$filesystem}{PercentUsed},$filesystem);
-                if ($fsinfo{$filesystem}{PercentUsed} >= 90) {
-                        unless ($filesystem =~ /run/) { push @disk_alerts, "The '$filesystem' filesystem is $fsinfo{$filesystem}{PercentUsed}% used.\n";}
-                }
         }
         print "\n";
-        foreach(@disk_alerts) { print "$_"; }
-        unless (@disk_alerts) { print "No issues found.\n"; }
+        foreach(@{$sys{DiskAlerts}}) { print "$_"; }
+        unless (@{$sys{DiskAlerts}}) { print "No issues found.\n"; }
 
 #
 # System Updates
@@ -328,7 +350,7 @@ sub print_report {
 #
 	print "\n[Backups]\n";
 	if ($sys{BackupCronFound}) { 
-		foreach(@{$sys{BackupCron}}) { print "Crontab [Y] - $_\n"; }
+		foreach(@{$sys{BackupCron}}) { print "Crontab [Y] - $_"; }
 	} else {
 		print "Crontab [N] - No scheduled backup was detected.\n";
 		$sys{BackupWarn} = "1";
@@ -345,6 +367,8 @@ sub print_report {
 	}
 	if ($sys{BackupWarn}) {
 		print "We recommend all customers backup their databases on a daily basis.\nIf you would like assistance setting up a backup script, please let us know.\n";
+	} else {
+		print "No issues found.\n";
 	}
 
 }
@@ -365,5 +389,6 @@ get_memory_usage();
 get_disk_usage();
 get_system_info();
 get_backup_info();
+#parse_crontab();
 print_report();
 print_raw_output();
