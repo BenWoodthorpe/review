@@ -104,7 +104,6 @@ sub sec2time {
     return $uptimestring;
 }
 
-
 sub percent {
         my($is, $of) = @_;
         return sprintf "%.0f", ($is * 100) / ($of ||= 1);
@@ -246,6 +245,11 @@ sub get_backup_info {
 	}
 	if (-d "/opt/tivoli") { $sys{TivoliInstalled} = "1"; }
 }
+
+######## MySQL
+
+
+
 
 
 sub print_report {
