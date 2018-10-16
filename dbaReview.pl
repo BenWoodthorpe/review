@@ -13,6 +13,7 @@ our %stats;
 our %fsinfo;
 our %cpu;
 our %sys;
+my $version = "2.0.0.alpha";
 
 $mycnf{host} = "127.0.0.1";
 
@@ -67,7 +68,7 @@ sub get_vars {
         $vars{'innodb_log_buffer_size'} = exists $vars{'innodb_log_buffer_size'} ? $vars{'innodb_log_buffer_size'} : 0;
 }
 
-sub make_short {
+sub short {
         # number, is it kilobytes?, decimal places
         my ($number, $kb, $d) = @_;
         my $n = 0;
@@ -83,6 +84,26 @@ sub make_short {
 
         return $short;
 }
+
+sub sec2time {
+    my $uptime  = shift;
+    my $seconds = $uptime % 60;
+    my $minutes = int( ( $uptime % 3600 ) / 60 );
+    my $hours   = int( ( $uptime % 86400 ) / (3600) );
+    my $days    = int( $uptime / (86400) );
+    my $uptimestring;
+    if ( $days > 0 ) {
+        $uptimestring = "${days}d ${hours}h ${minutes}m ${seconds}s";
+    } elsif ( $hours > 0 ) {
+        $uptimestring = "${hours}h ${minutes}m ${seconds}s";
+    } elsif ( $minutes > 0 ) {
+        $uptimestring = "${minutes}m ${seconds}s";
+    } else {
+        $uptimestring = "${seconds}s";
+    }
+    return $uptimestring;
+}
+
 
 sub percent {
         my($is, $of) = @_;
@@ -104,20 +125,20 @@ sub get_memory_usage {
         $mem{MySQLPerConnection} = ($vars{read_buffer_size} + $vars{read_rnd_buffer_size} + $vars{sort_buffer_size} + $vars{join_buffer_size} + $vars{binlog_cache_size} + $vars{thread_stack});
         $mem{MySQLMaxConnectionConfigured} = ($mem{MySQLPerConnection} * $vars{max_connections});
         $mem{MySQLMaxConnectionUsed} = ($mem{MySQLPerConnection} * $stats{Max_used_connections});
-        $mem{MySQLMaxConfigured} = make_short(($mem{MySQLBase} + $mem{MySQLMaxConnectionConfigured}), 1);
-        $mem{MySQLMaxUsed} = make_short(($mem{MySQLBase} + $mem{MySQLMaxConnectionUsed}), 1);
+        $mem{MySQLMaxConfigured} = short(($mem{MySQLBase} + $mem{MySQLMaxConnectionConfigured}), 1);
+        $mem{MySQLMaxUsed} = short(($mem{MySQLBase} + $mem{MySQLMaxConnectionUsed}), 1);
 	$mem{MySQLUsedPerc} = percent(($mem{MySQLMaxConnectionConfigured} + $mem{MySQLBase}), ($mem{MemTotal} * 1024));
-	$mem{MySQLBase} = make_short($mem{MySQLBase});
-	$mem{MySQLPerConnection} = make_short($mem{MySQLPerConnection});
+	$mem{MySQLBase} = short($mem{MySQLBase});
+	$mem{MySQLPerConnection} = short($mem{MySQLPerConnection});
 # System
 	$mem{MemFreePerc} = percent($mem{MemFree},$mem{MemTotal});
-	$mem{MemTotal} = make_short(($mem{MemTotal} * 1024), 1);
-	$mem{MemFree} = make_short(($mem{MemFree} * 1024), 1);
-	$mem{Cached} = exists $mem{Cached} ? make_short(($mem{Cached} * 1014), 1) : "0";
-        $mem{SwapUsed} = exists $mem{SwapTotal} ? make_short((($mem{SwapTotal} * 1024) - ($mem{SwapFree} *1024)), 1) : "0";
+	$mem{MemTotal} = short(($mem{MemTotal} * 1024), 1);
+	$mem{MemFree} = short(($mem{MemFree} * 1024), 1);
+	$mem{Cached} = exists $mem{Cached} ? short(($mem{Cached} * 1014), 1) : "0";
+        $mem{SwapUsed} = exists $mem{SwapTotal} ? short((($mem{SwapTotal} * 1024) - ($mem{SwapFree} *1024)), 1) : "0";
 	$mem{SwapFreePerc} = exists $mem{SwapTotal} ? percent($mem{SwapFree},$mem{SwapTotal}) : "0";
-	$mem{SwapTotal} = exists $mem{SwapTotal} ? make_short(($mem{SwapTotal} * 1024), 1) : "0";
-	$mem{SwapFree} = exists $mem{SwapTotal} ? make_short(($mem{SwapFree} * 1024), 1) : "0";
+	$mem{SwapTotal} = exists $mem{SwapTotal} ? short(($mem{SwapTotal} * 1024), 1) : "0";
+	$mem{SwapFree} = exists $mem{SwapTotal} ? short(($mem{SwapFree} * 1024), 1) : "0";
 }
 
 sub get_disk_usage {
@@ -173,12 +194,15 @@ sub get_cpu_usage {
 	$cpu{LoadAve} = sprintf '%.0f%%', 100 * (($cpu{LoadTotal} / $cpu{Cpus}) / $cpu{LoadCount});
 }
 
-sub get_system_updates {
-#%sys
+sub get_system_info {
         unless ( -e "/etc/redhat-release" ) { return; }
+	$sys{Hostname} = `hostname`;
+	@{$sys{IPAddresses}} = (`ip -o addr show up primary scope global` =~ /inet\s(\d+\.\d+\.\d+\.\d+)/g);
+	$sys{MySQLUptime} = sec2time($stats{Uptime}); 
 	($sys{LastKernelVersion}, $sys{LastUpdateTime}) = split (/ {2,}/, `rpm -q kernel --last | head -n1`);	
 	$sys{LastUpdateTime} =~ s/\s+(AM|PM).*//g;
 	($sys{UptimeSeconds} = `cat /proc/uptime`) =~ s/(^\d+?)\..*/$1/g;
+	$sys{SystemUptime} = sec2time($sys{UptimeSeconds});
 	($sys{TimeOfReboot} = time()) -= $sys{UptimeSeconds};
 	$sys{TimeOfReboot} = localtime($sys{TimeOfReboot});
         my ($wday, $mon, $mday, $rtime, $year) = split(' ', $sys{TimeOfReboot});
@@ -192,22 +216,58 @@ sub get_system_updates {
 	chomp(%sys);
 }
 
-sub print_report {
-# Disk usage
-	my @disk_alerts;
-	print "\n[Disk Usage]\n";
-	printf("%5s %5s %5s %5s %-60s\n", "Size","Used","Avail","Use%","Mounted on");
-	foreach my $filesystem (keys %fsinfo) {
-		printf("%5s %5s %5s %5s %-60s\n", $fsinfo{$filesystem}{TotalSize},$fsinfo{$filesystem}{Used},$fsinfo{$filesystem}{Available},$fsinfo{$filesystem}{PercentUsed},$filesystem);
-		if ($fsinfo{$filesystem}{PercentUsed} >= 90) {
-			unless ($filesystem =~ /run/) { push @disk_alerts, "The '$filesystem' filesystem is $fsinfo{$filesystem}{PercentUsed}% used.\n";}
+sub get_backup_info {
+	@{$sys{RootCron}} = `crontab -l 2>/dev/null`;
+        foreach(@{$sys{RootCron}}) {
+                if ($_ =~ /db|mysql|database|backup/) {
+                        $sys{BackupCronFound} = "1";
+                        chomp($_);
+			push @{$sys{BackupCron}}, $_;
+                }
+        }
+	@{$sys{KnownBackupDirs}} = ('/backups', '/home/backups', '/var/lib/mysql/backups', '/var/backup/db', '/home/dbdumps');
+	foreach(@{$sys{KnownBackupDirs}}) {
+		if (-d $_) {
+			$sys{BackupDirFound} = "1";
+			chomp($_);
+			push @{$sys{BackupDir}}, $_;
 		}
-	} 
+	}
+	if (-d "/opt/tivoli") { $sys{TivoliInstalled} = "1"; }
+}
+
+sub print_report {
+#
+# System Summary
+#
+	print "\n_________________________ [CogecoPeer1 DBA Report] _________________________\n";
+	print "Version: $version\n";
+	print "Date: \n";
+	print "System uptime: $sys{SystemUptime}\n";
+	print "MySQL uptime: $sys{MySQLUptime}\n";
+	print "Hostname: $sys{Hostname}\n";
+	print "IP addresses: ";
+	foreach(@{$sys{IPAddresses}}) { print "$_  "; }
 	print "\n";
-	foreach(@disk_alerts) { print "$_"; }
-	unless (@disk_alerts) { print "No issues found.\n"; }
+#
+# CPU usage
+#
+        print "\n[CPU Info]\n";
+        print "Model: $cpu{ModelName} (x$cpu{Sockets})\nCores: $cpu{TotalCores}\nThreads: $cpu{TotalThreads}\n";
+        print "$cpu{TotalSarLogs} day Load Average: $cpu{LoadAve}\n";
+        if (defined $cpu{LoadAverageOverCount}) {
+                print "\nThe 15min load average was above 75% total utilization on $cpu{LoadAverageOverCount}  times in the last $cpu{TotalSarLogs} days.\n";
+        } else {
+                print "\nNo issues found. The CPU total utilization has stayed below 75% for the last $cpu{TotalSarLogs} days.\n";
+        }
+        if ($cpu{Sockets} >= 2 && $vars{innodb_numa_interleave} eq "OFF") {
+                print "Non Uniform Memory Access (NUMA) is enabled in the CPUs, but not in MySQL.\n";
+                print "Adding innodb_numa_interleave=1 to the MySQL configuration may improve performance.\n";
+        }
+
 #
 # Memory usage
+#
 	print "\n[Memory Usage]\n";
 	print "Total memory: $mem{MemTotal} \nFree memory: $mem{MemFree} ($mem{MemFreePerc}%)\nCached: $mem{Cached} \n";
 	print "Total swap: $mem{SwapTotal} \nFree swap: $mem{SwapFree} ($mem{SwapFreePerc}%)\n";
@@ -227,22 +287,26 @@ sub print_report {
 		$mem{MySQLWarn} = 1;
         }
 	unless (defined $mem{MySQLWarn}) { print "No issues found.\n"; }
+
 #
-# CPU usage
-	print "\n[CPU Info]\n";
-	print "Model: $cpu{ModelName} (x$cpu{Sockets})\nCores: $cpu{TotalCores}\nThreads: $cpu{TotalThreads}\n";
-	print "$cpu{TotalSarLogs} day Load Average: $cpu{LoadAve}\n";
-	if (defined $cpu{LoadAverageOverCount}) {
-		print "\nThe 15min load average was above 75% total utilization on $cpu{LoadAverageOverCount}  times in the last $cpu{TotalSarLogs} days.\n";
-	} else {
-		print "\nNo issues found. The CPU total utilization has stayed below 75% for the last $cpu{TotalSarLogs} days.\n";
-	}
-	if ($cpu{Sockets} >= 2 && $vars{innodb_numa_interleave} eq "OFF") {
-		print "Non Uniform Memory Access (NUMA) is enabled in the CPUs, but not in MySQL.\n";
-		print "Adding innodb_numa_interleave=1 to the MySQL configuration may improve performance.\n";
-	}
+# Disk usage
+#
+        my @disk_alerts;
+        print "\n[Disk Usage]\n";
+        printf("%5s %5s %5s %5s %-60s\n", "Size","Used","Avail","Use%","Mounted on");
+        foreach my $filesystem (keys %fsinfo) {
+                printf("%5s %5s %5s %5s %-60s\n", $fsinfo{$filesystem}{TotalSize},$fsinfo{$filesystem}{Used},$fsinfo{$filesystem}{Available},$fsinfo{$filesystem}{PercentUsed},$filesystem);
+                if ($fsinfo{$filesystem}{PercentUsed} >= 90) {
+                        unless ($filesystem =~ /run/) { push @disk_alerts, "The '$filesystem' filesystem is $fsinfo{$filesystem}{PercentUsed}% used.\n";}
+                }
+        }
+        print "\n";
+        foreach(@disk_alerts) { print "$_"; }
+        unless (@disk_alerts) { print "No issues found.\n"; }
+
 #
 # System Updates
+#
 	print "\n[System Updates]\n";
 	print "Last update time: $sys{LastUpdateTime}\n";
 	print "Last reboot time: $sys{TimeOfReboot}\n";
@@ -256,12 +320,32 @@ sub print_report {
 	if ($sys{CP1Updates} eq 0) {
 		print "Automatic updating is enabled.\n";
 	} else {
-		print "Automatic updating is disabled.\n";
+		print "Automatic updating is disabled.\nYou can enable this by installing the 'yum-p1mh-autoupdates' package.\n";
 	}
 
 #
 # Backups
-
+#
+	print "\n[Backups]\n";
+	if ($sys{BackupCronFound}) { 
+		foreach(@{$sys{BackupCron}}) { print "Crontab [Y] - $_\n"; }
+	} else {
+		print "Crontab [N] - No scheduled backup was detected.\n";
+		$sys{BackupWarn} = "1";
+	}
+	if ($sys{BackupDirFound}) {
+		foreach(@{$sys{BackupDir}}) { print "Backup directory [Y] - $_\n"; } 
+	} else {
+		print "Backup directory [N] - No backup directory was found.\n\n";
+	}
+	if ($sys{TivoliInstalled}) {
+		print "Tivoli installed? [Y] - /opt/tivoli\n"
+	} else {
+		print "Tivoli installed? [N] - Tivoli backup was not detected on this server.\n\n";
+	}
+	if ($sys{BackupWarn}) {
+		print "We recommend all customers backup their databases on a daily basis.\nIf you would like assistance setting up a backup script, please let us know.\n";
+	}
 
 }
 
@@ -276,9 +360,10 @@ get_mycnf();
 connect_db();
 get_stats();
 get_vars();
-get_disk_usage();
-get_memory_usage();
 get_cpu_usage();
-get_system_updates();
+get_memory_usage();
+get_disk_usage();
+get_system_info();
+get_backup_info();
 print_report();
 print_raw_output();
