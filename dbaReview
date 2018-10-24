@@ -139,6 +139,9 @@ sub get_memory_usage {
 	$mem{InnoDBBufferPoolSize} = sprintf "%.0f",(((($mem{MemTotal} / 100) * 80) / 1024) / 1024);
         $mem{MySQLBase} = ($vars{'key_buffer_size'} + $vars{'query_cache_size'} + $vars{'innodb_buffer_pool_size'} + $vars{'innodb_additional_mem_pool_size'} + $vars{'innodb_log_buffer_size'});
         $mem{MySQLPerConnection} = ($vars{read_buffer_size} + $vars{read_rnd_buffer_size} + $vars{sort_buffer_size} + $vars{join_buffer_size} + $vars{binlog_cache_size} + $vars{thread_stack});
+
+# $mem{MemTotal} - $mem{MySQLBase} / $mem{MySQLPerConnection = max connection suggestion.
+	$mem{MySQLPossibleMaxConnections} = int ((($mem{MemTotal} * 1024) - $mem{MySQLBase}) / $mem{MySQLPerConnection});
         $mem{MySQLMaxConnectionConfigured} = ($mem{MySQLPerConnection} * $vars{max_connections});
         $mem{MySQLMaxConnectionUsed} = ($mem{MySQLPerConnection} * $stats{Max_used_connections});
         $mem{MySQLMaxConfigured} = short(($mem{MySQLBase} + $mem{MySQLMaxConnectionConfigured}), 1);
@@ -332,7 +335,7 @@ sub get_database_info {
 		 INNER JOIN information_schema.columns c on t.table_schema=c.table_schema and t.table_name=c.table_name 
 		 and t.table_schema not in ('performance_schema','information_schema','mysql','sys') 
 		 GROUP BY t.table_schema,t.table_name,t.engine HAVING sum(if(column_key in ('PRI','UNI'), 1,0)) =0 and t.engine IS NOT NULL;");
-	query_db($sql, 'keys');
+	query_db($sql, 'ukeys');
 	
 	# Tables - No index
 	foreach my $dbname (keys $db{database}) {
@@ -385,7 +388,11 @@ sub print_report {
 	if ($sys{KernelInUse} ne $sys{LastKernelVersion}) { print "System: A kernel update requires a reboot.\n"; }
 	unless ($sys{BackupCronFound}) { print "Backups: No scheduled backup was detected.\n"; }
 	if ($db{tables}{MyISAM}) { print "MySQL: There are $db{tables}{MyISAM}[0] MyISAM table(s).\n"; }
-	unless ($vars{'tmpdir'} =~ /shm/) { print "MySQL: For optimal performance, set the MySQL temporary directory to /dev/shm to use shared memory rather than disk\n"; }      
+	unless ($vars{'tmpdir'} =~ /shm/) { print "MySQL: For optimal performance, set the MySQL temporary directory to /dev/shm.\n"; }      
+	if ($db{fragmentation}) { print "MySQL: There are " . scalar (keys $db{fragmentation}) . " fragmented tables.\n"; }
+	if ($db{ukeys}) { print "MySQL: There are " . scalar (keys $db{ukeys}) . " tables without a primary or unique key.\n"; }
+	if ($db{noindex}) { print "MySQL: There are " . scalar (keys $db{noindex}) . " tables without an index.\n"; }
+	if ($db{excessindex}) { print "MySQL: There are " . scalar (keys $db{excessindex}) . " tables with excessive indexes.\n"; }
 
 # CPU usage
         print "\n[CPU Info]\n";
@@ -420,6 +427,15 @@ sub print_report {
                 print "Swappiness is > 10. This should be set lower than 10 to prevent unnecessary swapping.\n";
 		$mem{MySQLWarn} = 1;
         }
+	if ($stats{Max_used_connections} >= $vars{max_connections}) {
+		print "MySQL has reached the maximum number of concurrent connections.\n";
+		if ($mem{MySQLPossibleMaxConnections} >= $vars{max_connections}) {
+			print "Based on the current settings the max_connections could be increased to $mem{MySQLPossibleMaxConnections}.\n";
+		} else {
+			print "There are insufficient resources to increase the max_connections.\n";
+		}
+		$mem{MySQLWarn} = 1;
+	}
 	unless (defined $mem{MySQLWarn}) { print "No issues found.\n"; }
 
 # Disk usage
@@ -482,6 +498,41 @@ sub print_report {
 	}
 
 # Tables
+	print "\n[Tables]\n";
+	printf "%-7s %7s %10s %10s %10s %10s %10s\n", "Engine", "  Tables", "Rows", "Data", "Index", "Size", "idxfrac";
+	foreach my $key ( keys $db{tables}) {
+		printf "%-7s %7s %10s %10s %10s %10s %10s\n", $key, @{$db{tables}{$key}};
+	}
+
+# Tables - unique keys / indexing
+	if ($db{fragmentation}) {
+		print "\n[Fragmented Tables]\n";
+		printf "%-20s %-48s %-10s %-10s\n", "Database", "Table", "Free (MB)", "Engine";
+		foreach my $key (keys $db{fragmentation}) {
+	                printf "%-20s %-48s %-10s %-10s\n", $key, @{$db{fragmentation}{$key}};
+		}
+	}
+	if ($db{ukeys}) {
+		print "\n[Missing Primary / Unique Keys]\n";
+		printf "%-20s %-20s\n", "Database", "Table";
+		foreach my $key (keys $db{ukeys}) {
+			printf "%-20s %-20s\n", $key, @{$db{ukeys}{$key}};
+		}
+	}
+	if ($db{noindex}) {
+		print "\n[No Indexes]\n";
+		printf "%-20s %-48s %-20s %-10s %-10s\n", "Database", "Table", "Collation", "Engine", "Rows";	
+		foreach my $key (keys $db{noindex}) {
+			printf "%-20s %-48s %-20s %-10s %-10s\n", $key, @{$db{noindex}{$key}};
+		}
+	}
+	if ($db{excessindex}) {
+		print "\n[Excess Indexes]\n";
+		printf "%-20s %-48s %-20s\n", "Database", "Table", "Indexes";
+		foreach my $key (keys $db{excessindex}) {
+			printf "%-20s %-48s %-20s\n", $key, @{$db{excessindex}{$key}};
+		}
+	}
 
 
 }
