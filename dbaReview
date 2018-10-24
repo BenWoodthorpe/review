@@ -217,6 +217,7 @@ sub get_cpu_usage {
 sub get_system_info {
         unless ( -e "/etc/redhat-release" ) { return; }
 	$sys{Hostname} = `hostname`;
+	$sys{OSVersion} = `cat /etc/redhat-release`;
 	$sys{Date} = `date "+%B %Y"`;
 	chomp($sys{Day} = `date "+%e"`);
 	$sys{DaySuffix} = ordsuf($sys{Day});
@@ -274,27 +275,27 @@ sub get_backup_info {
 
 ####### MySQL
 
-sub fetch_array {
+sub query_db {
 	my ($sql, $type) = @_;
 	my $query = $dbh->prepare("$sql");
 	$query->execute;
 	while (my @out = $query->fetchrow_array()) {
-		next unless ($out[0]);
-		my $arraycnt = (scalar(@out) - 1);
-		for my $i (0 .. $arraycnt) {
-                                $out[$i] = defined $out[$i] ? $out[$i] : "NULL";
-                        }
-		$out[1] = join(" ",splice(@out,1));
+                next unless ($out[0]);
+		foreach (@out) {$_ = 'null' unless defined};
+		$out[1] = join(" ",splice(@out,1)); 
 		push @{$db{$type}{$out[0]}}, $out[1];
 	}
 }
 
 sub get_database_info {
 	# Databases
-	my $sql = ("select table_schema, truncate(sum(data_length + index_length)/1024/1024,2) FROM information_schema.tables group by table_schema;");
-	fetch_array($sql, 'database');
+	my $sql = ("select table_schema, truncate(sum(data_length + index_length)/1024/1024,2) 
+		    FROM information_schema.tables 
+		    WHERE table_schema not in ('mysql', 'performance_schema', 'information_schema', 'sys') 
+		    group by table_schema;");
+	query_db($sql, 'database');
 
-	# Tables / Engines
+	# Tables - Engines
 	$sql = ("SELECT engine,
                  count(*) as TABLES,
                  concat(round(sum(table_rows)/1000000,2),'M') `rows`,
@@ -307,53 +308,74 @@ sub get_database_info {
                  ('mysql', 'performance_schema', 'information_schema')
                  GROUP BY engine
                  ORDER BY sum(data_length+index_length) DESC LIMIT 10;");
-	fetch_array($sql, 'tables');
-
-
-######### FIX ME!!!
-	my (@a, @b);
-	if ($db{tables}{MyISAM}) {
-		my $arraycnt = scalar(@{$db{tables}{InnoDB}});
-		print "DEBUG: $arraycnt\n";
-		$a =  @{$db{tables}{InnoDB}};
-		print "DEBUG: $a\n";
-		@b = split(/ /,$a);
-	
-		$db{MyISAMCount} = $b[0]; 
+	query_db($sql, 'tables');
+	foreach my $engine (keys $db{tables}) {
+		@{$db{tables}{$engine}} = split(/ /,@{$db{tables}{$engine}}[0]);
+		$db{TableCount} += $db{tables}{$engine}[0];
 	}
-	print Dumper \@b;
-	print "DEBUG:  @{$db{tables}{InnoDB}}\n";
+
+	# Exit here if there are > 10000 tables as this can cause problems
+	if ($db{TableCount} >= 10000) { return; }
+
+	# Tables - Fragmentation
+	$sql =	("SELECT table_schema, 
+                  table_name, 
+                  (data_free /1024/1024) AS FREE, 
+                  engine FROM information_schema.tables 
+                  WHERE table_schema  NOT IN ('information_schema', 'mysql') 
+                  AND (data_free/1024/1024) > 50;");
+	query_db($sql, 'fragmentation');
+
+	# Tables - No primary / unique keys
+	$sql = ("SELECT t.table_schema,t.table_name 
+		 FROM information_schema.tables t 
+		 INNER JOIN information_schema.columns c on t.table_schema=c.table_schema and t.table_name=c.table_name 
+		 and t.table_schema not in ('performance_schema','information_schema','mysql','sys') 
+		 GROUP BY t.table_schema,t.table_name,t.engine HAVING sum(if(column_key in ('PRI','UNI'), 1,0)) =0 and t.engine IS NOT NULL;");
+	query_db($sql, 'keys');
+	
+	# Tables - No index
+	foreach my $dbname (keys $db{database}) {
+		$sql = ("SELECT table_schema,table_name,table_collation,engine,table_rows FROM INFORMATION_SCHEMA.tables 
+         		 WHERE table_schema = '$dbname' AND table_rows IS NOT NULL 
+                	 AND table_name NOT IN ( SELECT table_name FROM ( SELECT table_name, index_name FROM information_schema.statistics WHERE table_schema = '$dbname' 
+                	 GROUP BY table_name, index_name) tab_ind_cols group by table_name );");
+		query_db($sql, 'noindex');
+	}	
+        foreach my $entry (keys $db{noindex}) {
+                @{$db{noindex}{$entry}} = split(/ /,@{$db{noindex}{$entry}}[0]);
+        }
+
+
+	# Tables - Excessive indexes
+        foreach my $dbname (keys $db{database}) {
+		$sql = ("select  table_schema, table_name, count(*) from 
+			( SELECT  table_schema,table_name, index_name FROM information_schema.statistics  
+			WHERE table_schema = '$dbname' GROUP BY  table_name, index_name) 
+			tab_ind_cols group by table_name having count(*) > 7;");
+		query_db($sql, 'excessindex');
+	}
+        foreach my $entry (keys $db{excessindex}) {
+                @{$db{excessindex}{$entry}} = split(/ /,@{$db{excessindex}{$entry}}[0]);
+        }
+
 }
-
-sub get_table_info {
-# Need some sort of timeout setup here as too many tables / lack of indexes etc.. can hang the script
-# MySQL 5.7.4 implemented 'select /*+ MAX_EXECUTION_TIME(1000) */ banana from table' syntax, but this wont work on older versions
-
-
-
-
-
-
-}
-
-
 
 sub print_report {
-#
 # System Summary
-#
 	print "\n\n_________________________ [CogecoPeer1 DBA Report] _________________________\n\n";
 	print "Version: $version\n";
 	print "Date: $sys{Date}\n";
+	print "Hostname: $sys{Hostname}\n";
+        print "IP addresses: ";
+        foreach(@{$sys{IPAddresses}}) { print "$_  "; }
+        print "\n";
+	print "System: $sys{OSVersion}\n";
+	print "MySQL: $vars{version}\n";
 	print "System uptime: $sys{SystemUptime}\n";
 	print "MySQL uptime: $sys{MySQLUptime}\n";
-	print "Hostname: $sys{Hostname}\n";
-	print "IP addresses: ";
-	foreach(@{$sys{IPAddresses}}) { print "$_  "; }
-	print "\n";
-#
+
 # Summary action points
-#
 	print "\n[Summary]\n";
 	if (defined $cpu{LoadAverageOverCount}) { print "CPU: The 15min load average was above 75% total utilization on $cpu{LoadAverageOverCount} times in the last $cpu{TotalSarLogs} days.\n"; }
 	if ($mem{MySQLUsedPerc} >= 95) { print "Memory: MySQL is configured to use up to $mem{MySQLUsedPerc}% of the system memory. This can cause the system to swap to disk & may degrade performance\n"; }
@@ -362,11 +384,10 @@ sub print_report {
 	if ($sys{CP1Updates} eq 1) { print "System: Automatic updating is disabled. You can enable this by installing the 'yum-p1mh-autoupdates' package.\n"; }
 	if ($sys{KernelInUse} ne $sys{LastKernelVersion}) { print "System: A kernel update requires a reboot.\n"; }
 	unless ($sys{BackupCronFound}) { print "Backups: No scheduled backup was detected.\n"; }
+	if ($db{tables}{MyISAM}) { print "MySQL: There are $db{tables}{MyISAM}[0] MyISAM table(s).\n"; }
+	unless ($vars{'tmpdir'} =~ /shm/) { print "MySQL: For optimal performance, set the MySQL temporary directory to /dev/shm to use shared memory rather than disk\n"; }      
 
-
-#
 # CPU usage
-#
         print "\n[CPU Info]\n";
         print "Model: $cpu{ModelName} (x$cpu{Sockets})\nCores: $cpu{TotalCores}\nThreads: $cpu{TotalThreads}\n";
         print "$cpu{TotalSarLogs} day average load: $cpu{LoadAve}\n";
@@ -380,9 +401,7 @@ sub print_report {
                 print "Adding innodb_numa_interleave=1 to the MySQL configuration may improve performance.\n";
         }
 
-#
 # Memory usage
-#
 	print "\n[Memory Usage]\n";
 	print "Total memory: $mem{MemTotal} \nFree memory: $mem{MemFree} ($mem{MemFreePerc}%)\nCached: $mem{Cached} \n";
 	print "Total swap: $mem{SwapTotal} \nFree swap: $mem{SwapFree} ($mem{SwapFreePerc}%)\n";
@@ -403,9 +422,7 @@ sub print_report {
         }
 	unless (defined $mem{MySQLWarn}) { print "No issues found.\n"; }
 
-#
 # Disk usage
-#
         my @disk_alerts;
         print "\n[Disk Usage]\n";
         printf("%5s %5s %5s %5s %-60s\n", "Size","Used","Avail","Use%","Mounted on");
@@ -416,9 +433,7 @@ sub print_report {
         foreach(@{$sys{DiskAlerts}}) { print "$_"; }
         unless (@{$sys{DiskAlerts}}) { print "No issues found.\n"; }
 
-#
 # System Updates
-#
 	print "\n[System Updates]\n";
 	print "Last update time: $sys{LastUpdateTime}\n";
 	print "Last reboot time: $sys{TimeOfReboot}\n";
@@ -435,9 +450,7 @@ sub print_report {
 		print "Automatic updating is disabled.\nYou can enable this by installing the 'yum-p1mh-autoupdates' package.\n";
 	}
 
-#
 # Backups
-#
 	print "\n[Backups]\n";
 	if ($sys{BackupCronFound}) { 
 		foreach(@{$sys{BackupCron}}) { print "Crontab [Y] - $_"; }
@@ -461,14 +474,15 @@ sub print_report {
 		print "No issues found.\n";
 	}
 
-#
 # Databases
-#
 	print "\n[Databases]\n";
 	printf "%-30s %20s\n", "Database Name", "Database size (MB)";
 	foreach my $key ( keys $db{database}) {
 		printf "%-30s %20s\n", $key, @{$db{database}{$key}};
 	}
+
+# Tables
+
 
 }
 
@@ -477,7 +491,7 @@ sub print_raw_output {
 	#print Dumper \%cpu;
 	#print Dumper \%mem;
 	#print Dumper \%sys;
-	print Dumper \%db;
+	#print Dumper \%db;
 }
 
 get_mycnf();
@@ -490,5 +504,5 @@ get_disk_usage();
 get_system_info();
 get_backup_info();
 get_database_info();
-#print_report();
+print_report();
 print_raw_output();
