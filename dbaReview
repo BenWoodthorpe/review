@@ -4,19 +4,17 @@
 use strict;
 use warnings;
 use DBI;
+use Getopt::Long;
 use Data::Dumper;
 
-our %mem;
-our %mycnf;
-our %opt;
-our $dbh;
-our %vars;
-our %stats;
-our %fsinfo;
-our %cpu;
-our %sys;
-our %db;
 my $version = "2.0.0.alpha";
+
+
+our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f); 
+
+GetOptions(
+        \%opt, 'username=s', 'password=s', 'help', 'host=s', 'socket=s', 'update', 'csv', 'format',
+);
 
 $mycnf{host} = "127.0.0.1";
 
@@ -139,9 +137,7 @@ sub get_memory_usage {
 	$mem{InnoDBBufferPoolSize} = sprintf "%.0f",(((($mem{MemTotal} / 100) * 80) / 1024) / 1024);
         $mem{MySQLBase} = ($vars{'key_buffer_size'} + $vars{'query_cache_size'} + $vars{'innodb_buffer_pool_size'} + $vars{'innodb_additional_mem_pool_size'} + $vars{'innodb_log_buffer_size'});
         $mem{MySQLPerConnection} = ($vars{read_buffer_size} + $vars{read_rnd_buffer_size} + $vars{sort_buffer_size} + $vars{join_buffer_size} + $vars{binlog_cache_size} + $vars{thread_stack});
-
-# $mem{MemTotal} - $mem{MySQLBase} / $mem{MySQLPerConnection = max connection suggestion.
-	$mem{MySQLPossibleMaxConnections} = int ((($mem{MemTotal} * 1024) - $mem{MySQLBase}) / $mem{MySQLPerConnection});
+	$mem{MySQLPossibleMaxConnections} = int ((((($mem{MemTotal} * 1024) / 100) * 90) - $mem{MySQLBase}) / $mem{MySQLPerConnection});
         $mem{MySQLMaxConnectionConfigured} = ($mem{MySQLPerConnection} * $vars{max_connections});
         $mem{MySQLMaxConnectionUsed} = ($mem{MySQLPerConnection} * $stats{Max_used_connections});
         $mem{MySQLMaxConfigured} = short(($mem{MySQLBase} + $mem{MySQLMaxConnectionConfigured}), 1);
@@ -241,6 +237,10 @@ sub get_system_info {
 	$sys{LastKernelVersion} =~ s/kernel-//g;
 	$sys{CP1Updates} = `rpm -q yum-p1mh-autoupdates`;
 	$sys{CP1Updates} = $? >> 8;
+	chomp($sys{MySQLPID} = `pidof mysqld`);
+	@{$sys{ulimit}} = split (/\s+/,`grep "open files" /proc/$sys{MySQLPID}/limits`); 
+	$sys{ulimit} = @{$sys{ulimit}}[4];
+	$sys{MySQLOpenFiles} = `lsof -p $sys{MySQLPID} | wc -l`;
 	chomp(%sys);
 }
 
@@ -285,8 +285,7 @@ sub query_db {
 	while (my @out = $query->fetchrow_array()) {
                 next unless ($out[0]);
 		foreach (@out) {$_ = 'null' unless defined};
-		$out[1] = join(" ",splice(@out,1)); 
-		push @{$db{$type}{$out[0]}}, $out[1];
+		@{$db{$type}{$out[0]}} = splice(@out,1); 
 	}
 }
 
@@ -312,8 +311,8 @@ sub get_database_info {
                  GROUP BY engine
                  ORDER BY sum(data_length+index_length) DESC LIMIT 10;");
 	query_db($sql, 'tables');
+	
 	foreach my $engine (keys $db{tables}) {
-		@{$db{tables}{$engine}} = split(/ /,@{$db{tables}{$engine}}[0]);
 		$db{TableCount} += $db{tables}{$engine}[0];
 	}
 
@@ -327,7 +326,7 @@ sub get_database_info {
                   engine FROM information_schema.tables 
                   WHERE table_schema  NOT IN ('information_schema', 'mysql') 
                   AND (data_free/1024/1024) > 50;");
-	query_db($sql, 'fragmentation');
+	query_db($sql, 'frag');
 
 	# Tables - No primary / unique keys
 	$sql = ("SELECT t.table_schema,t.table_name 
@@ -345,10 +344,6 @@ sub get_database_info {
                 	 GROUP BY table_name, index_name) tab_ind_cols group by table_name );");
 		query_db($sql, 'noindex');
 	}	
-        foreach my $entry (keys $db{noindex}) {
-                @{$db{noindex}{$entry}} = split(/ /,@{$db{noindex}{$entry}}[0]);
-        }
-
 
 	# Tables - Excessive indexes
         foreach my $dbname (keys $db{database}) {
@@ -358,10 +353,24 @@ sub get_database_info {
 			tab_ind_cols group by table_name having count(*) > 7;");
 		query_db($sql, 'excessindex');
 	}
-        foreach my $entry (keys $db{excessindex}) {
-                @{$db{excessindex}{$entry}} = split(/ /,@{$db{excessindex}{$entry}}[0]);
-        }
 
+}
+
+sub set_format {
+	$f{disk} = "%5s %5s %5s %5s %-60s\n";
+	$f{db} = "%-30s %20s\n";
+	$f{table} = "%-7s %7s %10s %10s %10s %10s %10s\n";
+	$f{frag} = "%-20s %-48s %-10s %-10s\n";
+	$f{keys} = "%-20s %-20s\n";
+	$f{noidx} = "%-20s %-48s %-20s %-10s %-10s\n";
+	$f{xsidx} = "%-20s %-48s %-20s\n";
+	
+	unless($opt{format}) {
+		foreach my $key (keys %f) {
+			$f{$key} =~ s/-?\d+?(\w)\s/$1,/g;
+			$f{$key} =~ s/,$/\n/g;
+		}
+	}
 }
 
 sub print_report {
@@ -389,7 +398,7 @@ sub print_report {
 	unless ($sys{BackupCronFound}) { print "Backups: No scheduled backup was detected.\n"; }
 	if ($db{tables}{MyISAM}) { print "MySQL: There are $db{tables}{MyISAM}[0] MyISAM table(s).\n"; }
 	unless ($vars{'tmpdir'} =~ /shm/) { print "MySQL: For optimal performance, set the MySQL temporary directory to /dev/shm.\n"; }      
-	if ($db{fragmentation}) { print "MySQL: There are " . scalar (keys $db{fragmentation}) . " fragmented tables.\n"; }
+	if ($db{frag}) { print "MySQL: There are " . scalar (keys $db{frag}) . " fragmented tables.\n"; }
 	if ($db{ukeys}) { print "MySQL: There are " . scalar (keys $db{ukeys}) . " tables without a primary or unique key.\n"; }
 	if ($db{noindex}) { print "MySQL: There are " . scalar (keys $db{noindex}) . " tables without an index.\n"; }
 	if ($db{excessindex}) { print "MySQL: There are " . scalar (keys $db{excessindex}) . " tables with excessive indexes.\n"; }
@@ -430,7 +439,7 @@ sub print_report {
 	if ($stats{Max_used_connections} >= $vars{max_connections}) {
 		print "MySQL has reached the maximum number of concurrent connections.\n";
 		if ($mem{MySQLPossibleMaxConnections} >= $vars{max_connections}) {
-			print "Based on the current settings the max_connections could be increased to $mem{MySQLPossibleMaxConnections}.\n";
+			print "Based on the current settings the max_connections could be increased up to $mem{MySQLPossibleMaxConnections}.\n";
 		} else {
 			print "There are insufficient resources to increase the max_connections.\n";
 		}
@@ -441,9 +450,9 @@ sub print_report {
 # Disk usage
         my @disk_alerts;
         print "\n[Disk Usage]\n";
-        printf("%5s %5s %5s %5s %-60s\n", "Size","Used","Avail","Use%","Mounted on");
+	printf $f{disk}, "Size","Used","Avail","Use%","Mounted on";
         foreach my $filesystem (keys %fsinfo) {
-                printf("%5s %5s %5s %5s %-60s\n", $fsinfo{$filesystem}{TotalSize},$fsinfo{$filesystem}{Used},$fsinfo{$filesystem}{Available},$fsinfo{$filesystem}{PercentUsed},$filesystem);
+                printf $f{disk}, $fsinfo{$filesystem}{TotalSize},$fsinfo{$filesystem}{Used},$fsinfo{$filesystem}{Available},$fsinfo{$filesystem}{PercentUsed},$filesystem;
         }
         print "\n";
         foreach(@{$sys{DiskAlerts}}) { print "$_"; }
@@ -492,59 +501,87 @@ sub print_report {
 
 # Databases
 	print "\n[Databases]\n";
-	printf "%-30s %20s\n", "Database Name", "Database size (MB)";
+	printf $f{db}, "Database Name", "Database size (MB)";
 	foreach my $key ( keys $db{database}) {
-		printf "%-30s %20s\n", $key, @{$db{database}{$key}};
+		printf $f{db}, $key, @{$db{database}{$key}};
 	}
 
 # Tables
 	print "\n[Tables]\n";
-	printf "%-7s %7s %10s %10s %10s %10s %10s\n", "Engine", "  Tables", "Rows", "Data", "Index", "Size", "idxfrac";
+	printf $f{table}, "Engine", "  Tables", "Rows", "Data", "Index", "Size", "idxfrac";
 	foreach my $key ( keys $db{tables}) {
-		printf "%-7s %7s %10s %10s %10s %10s %10s\n", $key, @{$db{tables}{$key}};
+		printf $f{table}, $key, @{$db{tables}{$key}};
 	}
 
 # Tables - unique keys / indexing
-	if ($db{fragmentation}) {
+	if ($db{frag}) {
 		print "\n[Fragmented Tables]\n";
-		printf "%-20s %-48s %-10s %-10s\n", "Database", "Table", "Free (MB)", "Engine";
-		foreach my $key (keys $db{fragmentation}) {
-	                printf "%-20s %-48s %-10s %-10s\n", $key, @{$db{fragmentation}{$key}};
+		printf $f{frag}, "Database", "Table", "Free (MB)", "Engine";
+		foreach my $key (keys $db{frag}) {
+	                printf $f{frag}, $key, @{$db{frag}{$key}};
 		}
 	}
 	if ($db{ukeys}) {
 		print "\n[Missing Primary / Unique Keys]\n";
-		printf "%-20s %-20s\n", "Database", "Table";
+		printf $f{keys}, "Database", "Table";
 		foreach my $key (keys $db{ukeys}) {
-			printf "%-20s %-20s\n", $key, @{$db{ukeys}{$key}};
+			printf $f{keys}, $key, @{$db{ukeys}{$key}};
 		}
 	}
+
 	if ($db{noindex}) {
 		print "\n[No Indexes]\n";
-		printf "%-20s %-48s %-20s %-10s %-10s\n", "Database", "Table", "Collation", "Engine", "Rows";	
+		printf $f{noidx}, "Database", "Table", "Collation", "Engine", "Rows";	
 		foreach my $key (keys $db{noindex}) {
-			printf "%-20s %-48s %-20s %-10s %-10s\n", $key, @{$db{noindex}{$key}};
+			printf $f{noidx}, $key, @{$db{noindex}{$key}};
 		}
 	}
 	if ($db{excessindex}) {
 		print "\n[Excess Indexes]\n";
-		printf "%-20s %-48s %-20s\n", "Database", "Table", "Indexes";
+		printf $f{xsidx}, "Database", "Table", "Indexes";
 		foreach my $key (keys $db{excessindex}) {
-			printf "%-20s %-48s %-20s\n", $key, @{$db{excessindex}{$key}};
+			printf $f{xsidx}, $key, @{$db{excessindex}{$key}};
 		}
 	}
 
+# Table Cache
+	print "\n[Table Cache\n";
+	print "Open: $stats{'Open_tables'} of $vars{'table_cache'} Cached: " . percent($stats{'Open_tables'}, $vars{'table_cache'}) . "% \n";
+	print "Opened: " . short($stats{'Opened_tables'}) . " (" . short($stats{'Opened_tables'} / $stats{'Uptime'}, 0, 1) . "/s)\n";
+	if ($stats{Open_tables} >= (($sys{ulimit} / 100) * 90)) {
+	
+	}
+		
+	if ($stats{Open_tables} >= $vars{table_cache}) {
+		#table cache is full. 
+		#MyISAM requires 2 file descriptors per open table.
+		#MySQL's hard ulimit is $sys{ulimit}
+		#Count of MyISAM tables : $db{Tables}{MyISAM}[0]
+		#Count of open files: $sys{MySQLOpenFiles}
+	}
+
+#        my $pc_on_disk = perc($stats{'Created_tmp_disk_tables'}, $stats{'Created_tmp_tables'});
+#        print "\n[Temporary Tables]\n";
+#        print "Total: $stats{'Created_tmp_tables'}\n";
+#        print "Disk: $stats{'Created_tmp_disk_tables'} ($pc_on_disk%)\n";
+#        print "Tmpdir: $vars{tmpdir}\n";
+#        unless ($vars{'tmpdir'} =~ /shm/) {push @summary, "Consider setting tmpdir to /dev/shm if available.\n";}
+
+
 
 }
 
-sub print_raw_output {
+sub debug {
+	
 	#print Dumper \%fsinfo;
 	#print Dumper \%cpu;
 	#print Dumper \%mem;
-	#print Dumper \%sys;
+	print Dumper \%sys;
 	#print Dumper \%db;
 }
 
+
+###TODO:  quit if not root
 get_mycnf();
 connect_db();
 get_stats();
@@ -555,5 +592,6 @@ get_disk_usage();
 get_system_info();
 get_backup_info();
 get_database_info();
-print_report();
-print_raw_output();
+set_format();
+#print_report();
+debug();
