@@ -13,7 +13,7 @@ my $version = "2.0.0.alpha";
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f); 
 
 GetOptions(
-        \%opt, 'username=s', 'password=s', 'help', 'host=s', 'socket=s', 'update', 'csv', 'format',
+        \%opt, 'username=s', 'password=s', 'help', 'host=s', 'socket=s', 'update', 'csv', 'format', 'dba',
 );
 
 $mycnf{host} = "127.0.0.1";
@@ -239,7 +239,7 @@ sub get_system_info {
 	$sys{CP1Updates} = $? >> 8;
 	chomp($sys{MySQLPID} = `pidof mysqld`);
 	@{$sys{ulimit}} = split (/\s+/,`grep "open files" /proc/$sys{MySQLPID}/limits`); 
-	$sys{ulimit} = @{$sys{ulimit}}[4];
+	$sys{ulimit} = @{$sys{ulimit}}[3];
 	$sys{MySQLOpenFiles} = `lsof -p $sys{MySQLPID} | wc -l`;
 	chomp(%sys);
 }
@@ -289,7 +289,7 @@ sub query_db {
 	}
 }
 
-sub get_database_info {
+sub run_queries {
 	# Databases
 	my $sql = ("select table_schema, truncate(sum(data_length + index_length)/1024/1024,2) 
 		    FROM information_schema.tables 
@@ -315,6 +315,10 @@ sub get_database_info {
 	foreach my $engine (keys $db{tables}) {
 		$db{TableCount} += $db{tables}{$engine}[0];
 	}
+
+        $db{Threads} = short(8 + ( $vars{'max_connections'} / 100)); 
+	if ($db{Threads}  >= 100 ) { $db{Threads} = '100'; }
+	$db{TableCache} = (($db{tables}{MyISAM}[0] * 2) + $db{tables}{InnoDB}[0]);
 
 	# Exit here if there are > 10000 tables as this can cause problems
 	if ($db{TableCount} >= 10000) { return; }
@@ -373,7 +377,7 @@ sub set_format {
 	}
 }
 
-sub print_report {
+sub print_summary {
 # System Summary
 	print "\n\n_________________________ [CogecoPeer1 DBA Report] _________________________\n\n";
 	print "Version: $version\n";
@@ -403,6 +407,11 @@ sub print_report {
 	if ($db{noindex}) { print "MySQL: There are " . scalar (keys $db{noindex}) . " tables without an index.\n"; }
 	if ($db{excessindex}) { print "MySQL: There are " . scalar (keys $db{excessindex}) . " tables with excessive indexes.\n"; }
 
+	unless ($opt{dba}) { print "\n_________________________ [CogecoPeer1 DBA Report] _________________________\n\n"; }
+
+}
+
+sub print_report {
 # CPU usage
         print "\n[CPU Info]\n";
         print "Model: $cpu{ModelName} (x$cpu{Sockets})\nCores: $cpu{TotalCores}\nThreads: $cpu{TotalThreads}\n";
@@ -548,35 +557,57 @@ sub print_report {
 	print "\n[Table Cache\n";
 	print "Open: $stats{'Open_tables'} of $vars{'table_cache'} Cached: " . percent($stats{'Open_tables'}, $vars{'table_cache'}) . "% \n";
 	print "Opened: " . short($stats{'Opened_tables'}) . " (" . short($stats{'Opened_tables'} / $stats{'Uptime'}, 0, 1) . "/s)\n";
-	if ($stats{Open_tables} >= (($sys{ulimit} / 100) * 90)) {
+
+	# Check if ulimit is set to unlimited
+	unless ($sys{ulimit} =~ /unlimited/) {
+
+		# $vars{open_files_limit} should match $sys{ulimit}
+		if ($vars{open_files_limit} > $sys{ulimit}) { print "MySQL's open_files_limit is set higher than the system allows.\nMySQL: $vars{open_file_limit}\nSystem: $sys{ulimit}\n"; }
+		
+		# warn if we're using over 90% of the ulimit 
+		if ($stats{Open_tables} >= (($sys{ulimit} / 100) * 90)) { print "MySQL is using over 90% of the configured ulimit.\n"; }
+		
+		# Check if table cache is full
+		if ($stats{Open_tables} >= $vars{table_cache}) {
+			# Cache is full. Only increase if needed and safe to do so
+			if ($db{TableCache}  >= $vars{table_cache}) {
+				# More file descriptors needed than available cache
+				# Check if it's less than the ulimit
+				unless ($db{TableCache} >= $sys{ulimit}) { print "The table cache is full. It may be beneficial to increase this to $db{TableCache}"; }
+			}
+
+		}
 	
 	}
-		
-	if ($stats{Open_tables} >= $vars{table_cache}) {
-		#table cache is full. 
-		#MyISAM requires 2 file descriptors per open table.
-		#MySQL's hard ulimit is $sys{ulimit}
-		#Count of MyISAM tables : $db{Tables}{MyISAM}[0]
-		#Count of open files: $sys{MySQLOpenFiles}
-	}
 
-#        my $pc_on_disk = perc($stats{'Created_tmp_disk_tables'}, $stats{'Created_tmp_tables'});
-#        print "\n[Temporary Tables]\n";
-#        print "Total: $stats{'Created_tmp_tables'}\n";
-#        print "Disk: $stats{'Created_tmp_disk_tables'} ($pc_on_disk%)\n";
-#        print "Tmpdir: $vars{tmpdir}\n";
-#        unless ($vars{'tmpdir'} =~ /shm/) {push @summary, "Consider setting tmpdir to /dev/shm if available.\n";}
+# Temp tables			
+        print "\n[Temporary Tables]\n";
+        print "Total: $stats{Created_tmp_tables}\n";
+        print "Disk: $stats{Created_tmp_disk_tables} (" . percent($stats{Created_tmp_disk_tables}, $stats{Created_tmp_tables}) . "%)\n";
+        print "Tmpdir: $vars{tmpdir}\n";
+        unless ($vars{tmpdir} =~ /shm/) { print "\nFor optimal performance, set the MySQL temporary directory to /dev/shm.\n";}
+
+# Connections
+        print "\n[Connections]\n";
+        print "Max used: $stats{Max_used_connections} of $vars{max_connections} (" . percent($stats{Max_used_connections},$vars{max_connections}) . "%)\n";
+        print "Total: $stats{Connections}\n";
+        if ($stats{Max_used_connections} >= $vars{max_connections}) { print "\nThe server has reached the max_connections ($vars{max_connections}).\n";}
+
+# Thread Cache Size
+        print "\n[Thread Cache Size]\n";
+        print "Current thread_cache_size: $vars{thread_cache_size}\n";
+        print "Cache usage: " . percent($stats{Threads_created}, $stats{Connections}) . "%\n";
+        print "Optimal thread_cache_size: $db{Threads}\n";
+	
 
 
 
 }
-
 sub debug {
-	
 	#print Dumper \%fsinfo;
 	#print Dumper \%cpu;
 	#print Dumper \%mem;
-	print Dumper \%sys;
+	#print Dumper \%sys;
 	#print Dumper \%db;
 }
 
@@ -591,7 +622,8 @@ get_memory_usage();
 get_disk_usage();
 get_system_info();
 get_backup_info();
-get_database_info();
+run_queries();
 set_format();
-#print_report();
+print_summary();
+if ($opt{dba}) { print_report(); }
 debug();
