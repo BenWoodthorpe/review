@@ -379,7 +379,11 @@ sub set_format {
 
 sub print_summary {
 # System Summary
-	print "\n\n_________________________ [CogecoPeer1 DBA Report] _________________________\n\n";
+	if ($opt{dba}) { 
+		print "\n\n_________________________ [CogecoPeer1 DBA Report] _________________________\n\n"; 
+	} else { 
+		print "\n\n_________________________ [CogecoPeer1 DBA Summary] _________________________\n\n"; 
+	}
 	print "Version: $version\n";
 	print "Date: $sys{Date}\n";
 	print "Hostname: $sys{Hostname}\n";
@@ -390,6 +394,7 @@ sub print_summary {
 	print "MySQL: $vars{version}\n";
 	print "System uptime: $sys{SystemUptime}\n";
 	print "MySQL uptime: $sys{MySQLUptime}\n";
+	print "Queries: " . short(($stats{Questions}) / $stats{'Uptime'}) . " per second.\n";
 
 # Summary action points
 	print "\n[Summary]\n";
@@ -406,8 +411,11 @@ sub print_summary {
 	if ($db{ukeys}) { print "MySQL: There are " . scalar (keys $db{ukeys}) . " tables without a primary or unique key.\n"; }
 	if ($db{noindex}) { print "MySQL: There are " . scalar (keys $db{noindex}) . " tables without an index.\n"; }
 	if ($db{excessindex}) { print "MySQL: There are " . scalar (keys $db{excessindex}) . " tables with excessive indexes.\n"; }
-
-	unless ($opt{dba}) { print "\n_________________________ [CogecoPeer1 DBA Report] _________________________\n\n"; }
+	if ($stats{Max_used_connections} >= $vars{max_connections}) { print "MySQL: The server has reached the max_connections ($vars{max_connections}).\n";}
+	if (short($stats{Slow_queries} / $stats{Uptime}) >= 1) { print "MySQL: The server is averaging " . short($stats{Slow_queries} / $stats{Uptime}) . " slow queries per second.\n"; }
+	if (int(($stats{Select_range_check} + $stats{Select_full_join}) / ($stats{Uptime} / 86400)) >= 5000) { print "High number of joins without an index.\n"; }
+	
+	unless ($opt{dba}) { print "\n_________________________ [CogecoPeer1 DBA Summary] _________________________\n\n"; }
 
 }
 
@@ -598,8 +606,34 @@ sub print_report {
         print "Current thread_cache_size: $vars{thread_cache_size}\n";
         print "Cache usage: " . percent($stats{Threads_created}, $stats{Connections}) . "%\n";
         print "Optimal thread_cache_size: $db{Threads}\n";
-	
 
+# Slow queries
+        print "\n[Slow queries]\n";
+        print "slow_query_log enabled: $vars{'slow_query_log'}\n";
+        print "slow_query_log: $vars{'slow_query_log_file'}\n";
+        print "Slow queries: " . short($stats{Slow_queries}) . " (" . short($stats{Slow_queries} / $stats{Uptime}) . "/s) (" . percent($stats{Slow_queries}, $stats{Questions}) . "%)\n";
+
+# Joins & table scans
+        print "\n[Table Scans]\n";
+        print "No index: " . ($stats{Select_range_check} + $stats{Select_full_join}) . " (Daily - " . int(($stats{Select_range_check} + $stats{Select_full_join}) / ($stats{Uptime} / 86400)) .")\n";
+        print "Select_scan: $stats{'Select_scan'}\n";
+        print "Sort_scan: $stats{'Sort_scan'}\n";
+        print "Select_full_join: $stats{'Select_full_join'}\n";
+        print "Select_full_range_join: $stats{'Select_full_range_join'}\n";
+        print "Full table scans: " . short(($stats{'Handler_read_rnd_next'} + $stats{'Handler_read_rnd'}) / ($stats{'Handler_read_rnd_next'} + $stats{'Handler_read_rnd'} + $stats{'Handler_read_first'} + $stats{'Handler_read_next'} + $stats{'Handler_read_key'} + $stats{'Handler_read_prev'})) . "%\n";
+
+
+
+
+
+# table locks
+#
+# # MyISAM
+# query cache
+# key buffer
+#
+# # InnoDB
+#
 
 
 }
