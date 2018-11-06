@@ -53,6 +53,15 @@ sub get_stats {
         $query->execute();
         my @row;
         while(@row = $query->fetchrow_array()) { $stats{$row[0]} = $row[1];}
+	$db{select}  = $stats{Com_select};
+	$db{insert}  = $stats{Com_insert}  + $stats{Com_insert_select};
+	$db{replace} = $stats{Com_replace} + $stats{Com_replace_select};
+	$db{update}  = $stats{Com_update}  + (exists $stats{Com_update_multi} ? $stats{Com_update_multi} : 0);
+	$db{delete}  = $stats{Com_delete}  + (exists $stats{Com_delete_multi} ? $stats{Com_delete_multi} : 0);
+        $db{key_read_ratio} = sprintf "%.2f",($stats{'Key_read_requests'} ? 100 - ($stats{'Key_reads'} / $stats{'Key_read_requests'}) * 100 : 0);
+        $db{key_write_ratio} = sprintf "%.2f",($stats{'Key_write_requests'} ? 100 - ($stats{'Key_writes'} / $stats{'Key_write_requests'}) * 100 : 0);
+        $db{key_cache_block_size} = (defined $vars{'key_cache_block_size'} ? $vars{'key_cache_block_size'} : 1024);
+
 }
 
 sub get_vars {
@@ -230,8 +239,7 @@ sub get_system_info {
 	($sys{TimeOfReboot} = time()) -= $sys{UptimeSeconds};
 	$sys{TimeOfReboot} = localtime($sys{TimeOfReboot});
         my ($wday, $mon, $mday, $rtime, $year) = split(' ', $sys{TimeOfReboot});
-        chomp($mday);
-        if ($mday =~ /^\d$/) { $mday = "0$mday"; }
+	$mday = sprintf "%02d", $mday;
         $sys{TimeOfReboot} = "$wday $mday $mon $year $rtime";
         $sys{KernelInUse} = `uname -r`;
 	$sys{LastKernelVersion} =~ s/kernel-//g;
@@ -414,6 +422,7 @@ sub print_summary {
 	if ($stats{Max_used_connections} >= $vars{max_connections}) { print "MySQL: The server has reached the max_connections ($vars{max_connections}).\n";}
 	if (short($stats{Slow_queries} / $stats{Uptime}) >= 1) { print "MySQL: The server is averaging " . short($stats{Slow_queries} / $stats{Uptime}) . " slow queries per second.\n"; }
 	if (int(($stats{Select_range_check} + $stats{Select_full_join}) / ($stats{Uptime} / 86400)) >= 5000) { print "High number of joins without an index.\n"; }
+	if (( $vars{'query_cache_type'} =~  /^(ON|DEMAND|1|2)$/ ) and (not defined $db{tables}{MyISAM})) { print "MySQL: Query cache enabled, but no MyISAM tables found.\n"; }
 	
 	unless ($opt{dba}) { print "\n_________________________ [CogecoPeer1 DBA Summary] _________________________\n\n"; }
 
@@ -568,24 +577,8 @@ sub print_report {
 
 	# Check if ulimit is set to unlimited
 	unless ($sys{ulimit} =~ /unlimited/) {
-
 		# $vars{open_files_limit} should match $sys{ulimit}
 		if ($vars{open_files_limit} > $sys{ulimit}) { print "MySQL's open_files_limit is set higher than the system allows.\nMySQL: $vars{open_file_limit}\nSystem: $sys{ulimit}\n"; }
-		
-		# warn if we're using over 90% of the ulimit 
-		if ($stats{Open_tables} >= (($sys{ulimit} / 100) * 90)) { print "MySQL is using over 90% of the configured ulimit.\n"; }
-		
-		# Check if table cache is full
-		if ($stats{Open_tables} >= $vars{table_cache}) {
-			# Cache is full. Only increase if needed and safe to do so
-			if ($db{TableCache}  >= $vars{table_cache}) {
-				# More file descriptors needed than available cache
-				# Check if it's less than the ulimit
-				unless ($db{TableCache} >= $sys{ulimit}) { print "The table cache is full. It may be beneficial to increase this to $db{TableCache}"; }
-			}
-
-		}
-	
 	}
 
 # Temp tables			
@@ -622,18 +615,47 @@ sub print_report {
         print "Select_full_range_join: $stats{'Select_full_range_join'}\n";
         print "Full table scans: " . short(($stats{'Handler_read_rnd_next'} + $stats{'Handler_read_rnd'}) / ($stats{'Handler_read_rnd_next'} + $stats{'Handler_read_rnd'} + $stats{'Handler_read_first'} + $stats{'Handler_read_next'} + $stats{'Handler_read_key'} + $stats{'Handler_read_prev'})) . "%\n";
 
-
-
-
-
 # table locks
+        print "\n[Table Locks]\n";
+        print "Immediate: $stats{'Table_locks_immediate'}\n";
+        print "Waited: $stats{'Table_locks_waited'}\n";	
 #
 # # MyISAM
 # query cache
+
+	print "\n[Query Cache]\n";
+        print "Type: $vars{'query_cache_type'}\n";
+        if ( $vars{'query_cache_type'} =~  /^(ON|DEMAND|1|2)$/ ) {
+		print "Memory usage: " . short($vars{query_cache_size} - $stats{Qcache_free_memory},1) . " of " . short($vars{query_cache_size},1) . " (" . percent(($vars{query_cache_size} - $stats{Qcache_free_memory}), $vars{query_cache_size}) . "%)\n"; 
+		print "Hits per sec: " . short($stats{'Qcache_hits'} / $stats{Uptime}) . "\n";		
+		print "Hit rate: " . short(($stats{'Qcache_hits'} / ($stats{'Qcache_hits'} + $stats{'Qcache_inserts'} + $stats{'Qcache_not_cached'})) * 100) . "%\n";
+                print "\n[Qcache Stats]\n";
+                print "SELECT: $db{select}\nINSERT: $db{insert}\nREPLACE: $db{replace}\nUPDATE: $db{update}\nDELETE: $db{delete}\n";
+                print "Lowmem prunes: $stats{'Qcache_lowmem_prunes'}\nNot Cached: $stats{'Qcache_not_cached'}\nQueries in Cache: $stats{'Qcache_queries_in_cache'}\nTotal Blocks: $stats{'Qcache_total_blocks'}\n";
+		unless ($db{tables}{MyISAM}) { print "\nNo MyISAM tables found. Disable query_cache for optimal performance\n"; }
+	}
+
+
 # key buffer
-#
+	print "\n[Key Buffer]\n";
+	print "Used: " . short(($stats{'Key_blocks_used'} * $db{key_cache_block_size}), 1) . " of " . short($vars{'key_buffer_size'}, 1) . " (" . percent(($stats{Key_blocks_used} * $db{key_cache_block_size}), $vars{key_buffer_size}) . "%)\n";
+	print "Write Hit: $db{key_write_ratio}%\nRead Hit: $db{key_read_ratio}%\n";
+
+##
 # # InnoDB
 #
+
+#[InnoDB Buffer Pool]
+#[InnoDB Locks]
+#[InnoDB Stats]
+#[InnoDB Settings]
+#[MySQL Roles]
+#[Anonymous user accounts]
+#[Accounts without passwords]
+#[Users without host restrictions]
+
+
+
 
 
 }
