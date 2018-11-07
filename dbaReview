@@ -58,8 +58,8 @@ sub get_stats {
 	$db{replace} = $stats{Com_replace} + $stats{Com_replace_select};
 	$db{update}  = $stats{Com_update}  + (exists $stats{Com_update_multi} ? $stats{Com_update_multi} : 0);
 	$db{delete}  = $stats{Com_delete}  + (exists $stats{Com_delete_multi} ? $stats{Com_delete_multi} : 0);
-        $db{key_read_ratio} = sprintf "%.2f",($stats{'Key_read_requests'} ? 100 - ($stats{'Key_reads'} / $stats{'Key_read_requests'}) * 100 : 0);
-        $db{key_write_ratio} = sprintf "%.2f",($stats{'Key_write_requests'} ? 100 - ($stats{'Key_writes'} / $stats{'Key_write_requests'}) * 100 : 0);
+        $db{key_read_ratio} = sprintf "%.0f",($stats{'Key_read_requests'} ? 100 - ($stats{'Key_reads'} / $stats{'Key_read_requests'}) * 100 : 0);
+        $db{key_write_ratio} = sprintf "%.0f",($stats{'Key_write_requests'} ? 100 - ($stats{'Key_writes'} / $stats{'Key_write_requests'}) * 100 : 0);
         $db{key_cache_block_size} = (defined $vars{'key_cache_block_size'} ? $vars{'key_cache_block_size'} : 1024);
 
 }
@@ -76,6 +76,7 @@ sub get_vars {
         $vars{'innodb_additional_mem_pool_size'} = exists $vars{'innodb_additional_mem_pool_size'} ? $vars{'innodb_additional_mem_pool_size'} : 0;
         $vars{'innodb_buffer_pool_size'} = exists $vars{'innodb_buffer_pool_size'} ? $vars{'innodb_buffer_pool_size'} : 0;
         $vars{'innodb_log_buffer_size'} = exists $vars{'innodb_log_buffer_size'} ? $vars{'innodb_log_buffer_size'} : 0;
+        $vars{'innodb_buffer_pool_instances'} = exists $vars{'innodb_buffer_pool_instances'} ? $vars{'innodb_buffer_pool_instances'} : 1;
 }
 
 sub short {
@@ -144,7 +145,7 @@ sub get_memory_usage {
         close MEMINFO;
 # MySQL
 	$mem{InnoDBBufferPoolSize} = sprintf "%.0f",(((($mem{MemTotal} / 100) * 80) / 1024) / 1024);
-        $mem{MySQLBase} = ($vars{'key_buffer_size'} + $vars{'query_cache_size'} + $vars{'innodb_buffer_pool_size'} + $vars{'innodb_additional_mem_pool_size'} + $vars{'innodb_log_buffer_size'});
+        $mem{MySQLBase} = ($vars{key_buffer_size} + $vars{query_cache_size} + $vars{innodb_buffer_pool_size} + $vars{innodb_additional_mem_pool_size} + $vars{innodb_log_buffer_size});
         $mem{MySQLPerConnection} = ($vars{read_buffer_size} + $vars{read_rnd_buffer_size} + $vars{sort_buffer_size} + $vars{join_buffer_size} + $vars{binlog_cache_size} + $vars{thread_stack});
 	$mem{MySQLPossibleMaxConnections} = int ((((($mem{MemTotal} * 1024) / 100) * 90) - $mem{MySQLBase}) / $mem{MySQLPerConnection});
         $mem{MySQLMaxConnectionConfigured} = ($mem{MySQLPerConnection} * $vars{max_connections});
@@ -287,13 +288,17 @@ sub get_backup_info {
 ####### MySQL
 
 sub query_db {
-	my ($sql, $type) = @_;
+	my ($sql, $type, $tx) = @_;
 	my $query = $dbh->prepare("$sql");
 	$query->execute;
 	while (my @out = $query->fetchrow_array()) {
                 next unless ($out[0]);
 		foreach (@out) {$_ = 'null' unless defined};
-		@{$db{$type}{$out[0]}} = splice(@out,1); 
+		if (defined $tx) {
+			$db{$type} = $out[0];
+		} else {
+			@{$db{$type}{$out[0]}} = splice(@out,1); 
+		}
 	}
 }
 
@@ -326,7 +331,12 @@ sub run_queries {
 
         $db{Threads} = short(8 + ( $vars{'max_connections'} / 100)); 
 	if ($db{Threads}  >= 100 ) { $db{Threads} = '100'; }
-	$db{TableCache} = (($db{tables}{MyISAM}[0] * 2) + $db{tables}{InnoDB}[0]);
+
+	# InnoDB
+	$sql = ("SELECT CEILING(Total_InnoDB_Bytes) RIBPS FROM
+ 		(SELECT SUM(data_length+index_length) Total_InnoDB_Bytes
+ 		FROM information_schema.tables WHERE engine='InnoDB') A;");
+	query_db($sql, 'BufferSize', 1);
 
 	# Exit here if there are > 10000 tables as this can cause problems
 	if ($db{TableCount} >= 10000) { return; }
@@ -387,11 +397,7 @@ sub set_format {
 
 sub print_summary {
 # System Summary
-	if ($opt{dba}) { 
-		print "\n\n_________________________ [CogecoPeer1 DBA Report] _________________________\n\n"; 
-	} else { 
-		print "\n\n_________________________ [CogecoPeer1 DBA Summary] _________________________\n\n"; 
-	}
+	print "\n\n_________________________ [CogecoPeer1 DBA " . ($opt{dba} ? "Report" : "Summary")  . "] _________________________\n\n";
 	print "Version: $version\n";
 	print "Date: $sys{Date}\n";
 	print "Hostname: $sys{Hostname}\n";
@@ -635,10 +641,9 @@ sub print_report {
 		unless ($db{tables}{MyISAM}) { print "\nNo MyISAM tables found. Disable query_cache for optimal performance\n"; }
 	}
 
-
 # key buffer
 	print "\n[Key Buffer]\n";
-	print "Used: " . short(($stats{'Key_blocks_used'} * $db{key_cache_block_size}), 1) . " of " . short($vars{'key_buffer_size'}, 1) . " (" . percent(($stats{Key_blocks_used} * $db{key_cache_block_size}), $vars{key_buffer_size}) . "%)\n";
+	print "Used: " . short(($stats{Key_blocks_used} * $db{key_cache_block_size}), 1) . " of " . short($vars{key_buffer_size}, 1) . " (" . percent(($stats{Key_blocks_used} * $db{key_cache_block_size}), $vars{key_buffer_size}) . "%)\n";
 	print "Write Hit: $db{key_write_ratio}%\nRead Hit: $db{key_read_ratio}%\n";
 
 ##
