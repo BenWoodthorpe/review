@@ -5,7 +5,6 @@ use strict;
 use warnings;
 use DBI;
 use Getopt::Long;
-use Data::Dumper;
 
 my $version = "2.0.0.alpha";
 
@@ -13,7 +12,7 @@ my $version = "2.0.0.alpha";
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f); 
 
 GetOptions(
-        \%opt, 'username=s', 'password=s', 'help', 'host=s', 'socket=s', 'update', 'csv', 'format', 'dba',
+        \%opt, 'username=s', 'password=s', 'help', 'host=s', 'socket=s', 'update', 'format', 'review', 'debug=s', 'query=s', 'showall', 
 );
 
 $mycnf{host} = "127.0.0.1";
@@ -288,16 +287,16 @@ sub get_backup_info {
 ####### MySQL
 
 sub query_db {
-	my ($sql, $type, $tx) = @_;
+	my ($sql, $name, $qt) = @_;
 	my $query = $dbh->prepare("$sql");
 	$query->execute;
 	while (my @out = $query->fetchrow_array()) {
                 next unless ($out[0]);
 		foreach (@out) {$_ = 'null' unless defined};
-		if (defined $tx) {
-			$db{$type} = $out[0];
+		if (defined $qt) {
+			$db{$name} = $out[0];
 		} else {
-			@{$db{$type}{$out[0]}} = splice(@out,1); 
+			@{$db{$name}{$out[0]}} = splice(@out,1); 
 		}
 	}
 }
@@ -338,20 +337,19 @@ sub run_queries {
  		FROM information_schema.tables WHERE engine='InnoDB') A;");
 	query_db($sql, 'BufferSize', 1);
 
-	# Exit here if there are > 10000 tables as this can cause problems
-	if ($db{TableCount} >= 10000) { return; }
+	# Return here if there are > 10000 tables as this can cause problems
+	if ($db{TableCount} >= 10000 and not $opt{showall}) { return; }
 
 	# Tables - Fragmentation
-	$sql =	("SELECT table_schema, 
-                  table_name, 
-                  (data_free /1024/1024) AS FREE, 
+	$sql =	("SELECT table_name, table_schema, 
+                  round((data_free /1024/1024),0) AS FREE, 
                   engine FROM information_schema.tables 
                   WHERE table_schema  NOT IN ('information_schema', 'mysql') 
-                  AND (data_free/1024/1024) > 50;");
+                  AND (data_free/1024/1024) > 0;"); # TODO: revert to 50 after testing
 	query_db($sql, 'frag');
 
 	# Tables - No primary / unique keys
-	$sql = ("SELECT t.table_schema,t.table_name 
+	$sql = ("SELECT t.table_name,t.table_schema 
 		 FROM information_schema.tables t 
 		 INNER JOIN information_schema.columns c on t.table_schema=c.table_schema and t.table_name=c.table_name 
 		 and t.table_schema not in ('performance_schema','information_schema','mysql','sys') 
@@ -360,7 +358,7 @@ sub run_queries {
 	
 	# Tables - No index
 	foreach my $dbname (keys $db{database}) {
-		$sql = ("SELECT table_schema,table_name,table_collation,engine,table_rows FROM INFORMATION_SCHEMA.tables 
+		$sql = ("SELECT table_name,table_schema,table_collation,engine,table_rows FROM INFORMATION_SCHEMA.tables 
          		 WHERE table_schema = '$dbname' AND table_rows IS NOT NULL 
                 	 AND table_name NOT IN ( SELECT table_name FROM ( SELECT table_name, index_name FROM information_schema.statistics WHERE table_schema = '$dbname' 
                 	 GROUP BY table_name, index_name) tab_ind_cols group by table_name );");
@@ -369,7 +367,7 @@ sub run_queries {
 
 	# Tables - Excessive indexes
         foreach my $dbname (keys $db{database}) {
-		$sql = ("select  table_schema, table_name, count(*) from 
+		$sql = ("select  table_name, table_schema, count(*) from 
 			( SELECT  table_schema,table_name, index_name FROM information_schema.statistics  
 			WHERE table_schema = '$dbname' GROUP BY  table_name, index_name) 
 			tab_ind_cols group by table_name having count(*) > 7;");
@@ -395,9 +393,34 @@ sub set_format {
 	}
 }
 
+sub search {
+        my @hashrefs = (\%vars, \%stats);
+        my $count;
+        foreach my $ref(@hashrefs) {
+                my @results = grep { /$opt{query}/i } keys %{ $ref };
+                if (@results) { print "\n_________________________ [" . (defined $count ? "Global Status" : "Global Variables") .  "] _________________________\n\n"; }
+                foreach(@results) { printf "%-50s %-20s\n", $_, $$ref{$_}; }
+                $count++;
+        }
+        print "\n";
+        exit;
+}
+
+sub debug {
+        use Data::Dumper;
+        if ($opt{debug} =~ /fsinfo/) { print Dumper \%fsinfo;}
+        if ($opt{debug} =~ /cpu/) { print Dumper \%cpu;}
+        if ($opt{debug} =~ /mem/) { print Dumper \%mem;}
+        if ($opt{debug} =~ /sys/) { print Dumper \%sys;}
+        if ($opt{debug} =~ /db/) { print Dumper \%db;}
+        if ($opt{debug} =~ /stats/) { print Dumper \%stats;}
+        if ($opt{debug} =~ /vars/) { print Dumper \%vars;}
+	exit;
+}
+
 sub print_summary {
 # System Summary
-	print "\n\n_________________________ [CogecoPeer1 DBA " . ($opt{dba} ? "Report" : "Summary")  . "] _________________________\n\n";
+	print "\n\n_________________________ [CogecoPeer1 DBA " . ($opt{review} ? "Report" : "Summary")  . "] _________________________\n\n";
 	print "Version: $version\n";
 	print "Date: $sys{Date}\n";
 	print "Hostname: $sys{Hostname}\n";
@@ -534,45 +557,60 @@ sub print_report {
 # Databases
 	print "\n[Databases]\n";
 	printf $f{db}, "Database Name", "Database size (MB)";
-	foreach my $key ( keys $db{database}) {
+	foreach my $key ( sort { $db{database}{$b}[0] <=> $db{database}{$a}[0] } keys $db{database} ) {
 		printf $f{db}, $key, @{$db{database}{$key}};
 	}
 
 # Tables
 	print "\n[Tables]\n";
 	printf $f{table}, "Engine", "  Tables", "Rows", "Data", "Index", "Size", "idxfrac";
-	foreach my $key ( keys $db{tables}) {
+	foreach my $key ( sort { $db{tables}{$b}[0] <=> $db{tables}{$a}[0] } keys $db{tables} ) {
 		printf $f{table}, $key, @{$db{tables}{$key}};
 	}
 
-# Tables - unique keys / indexing
+# Tables - fragmentation / unique keys / indexing
 	if ($db{frag}) {
 		print "\n[Fragmented Tables]\n";
 		printf $f{frag}, "Database", "Table", "Free (MB)", "Engine";
-		foreach my $key (keys $db{frag}) {
-	                printf $f{frag}, $key, @{$db{frag}{$key}};
+		my $count = 1;
+		foreach my $key (sort { $db{frag}{$b}[1] <=> $db{frag}{$a}[1] } keys $db{frag}) {
+			my $dbname = shift @{$db{frag}{$key}};
+	                printf $f{frag}, $dbname, $key, @{$db{frag}{$key}} if ($count <= $sys{count});
+			$count++;
 		}
+		if ($sys{count} < scalar (keys $db{frag})) { print "Showing a maximum of $sys{count}/" . scalar (keys $db{frag}) . " tables. Use the '-showall' option to print all tables.\n"; }
 	}
 	if ($db{ukeys}) {
 		print "\n[Missing Primary / Unique Keys]\n";
 		printf $f{keys}, "Database", "Table";
+		my $count = 1;
 		foreach my $key (keys $db{ukeys}) {
-			printf $f{keys}, $key, @{$db{ukeys}{$key}};
+			my $dbname = shift @{$db{ukeys}{$key}};
+			printf $f{keys}, $dbname, $key, @{$db{ukeys}{$key}}  if ($count <= $sys{count});
+			$count++;
 		}
+		if ($sys{count} < scalar (keys $db{ukeys})) { print "Showing a maximum of $sys{count}/" . scalar (keys $db{ukeys}) . " tables. Use the '-showall' option to print all tables.\n"; }
 	}
 
 	if ($db{noindex}) {
 		print "\n[No Indexes]\n";
 		printf $f{noidx}, "Database", "Table", "Collation", "Engine", "Rows";	
+		my $count = 1;
 		foreach my $key (keys $db{noindex}) {
-			printf $f{noidx}, $key, @{$db{noindex}{$key}};
+			my $dbname = shift @{$db{noindex}{$key}};
+			printf $f{noidx}, $dbname, $key, @{$db{noindex}{$key}} if ($count <= $sys{count});		
+			$count++;
 		}
+		if ($sys{count} < scalar (keys $db{noindex})) { print "Showing a maximum of $sys{count}/" . scalar (keys $db{noindex}) . " tables. Use the '-showall' option to print all tables.\n"; }
 	}
 	if ($db{excessindex}) {
 		print "\n[Excess Indexes]\n";
 		printf $f{xsidx}, "Database", "Table", "Indexes";
+		my $count = 1;
 		foreach my $key (keys $db{excessindex}) {
-			printf $f{xsidx}, $key, @{$db{excessindex}{$key}};
+			my $dbname = shift @{$db{excessindex}{$key}};
+			printf $f{xsidx}, $dbname, $key, @{$db{excessindex}{$key}};
+			$count++;
 		}
 	}
 
@@ -583,7 +621,7 @@ sub print_report {
 
 	# Check if ulimit is set to unlimited
 	unless ($sys{ulimit} =~ /unlimited/) {
-		# $vars{open_files_limit} should match $sys{ulimit}
+		# $vars{open_files_limit} should be <  $sys{ulimit}
 		if ($vars{open_files_limit} > $sys{ulimit}) { print "MySQL's open_files_limit is set higher than the system allows.\nMySQL: $vars{open_file_limit}\nSystem: $sys{ulimit}\n"; }
 	}
 
@@ -664,27 +702,28 @@ sub print_report {
 
 
 }
-sub debug {
-	#print Dumper \%fsinfo;
-	#print Dumper \%cpu;
-	#print Dumper \%mem;
-	#print Dumper \%sys;
-	#print Dumper \%db;
-}
-
 
 ###TODO:  quit if not root
+
 get_mycnf();
 connect_db();
 get_stats();
 get_vars();
+if ($opt{query}) { search(); }
 get_cpu_usage();
 get_memory_usage();
 get_disk_usage();
 get_system_info();
 get_backup_info();
 run_queries();
+if ($opt{debug}) { debug(); }
 set_format();
 print_summary();
-if ($opt{dba}) { print_report(); }
-debug();
+if ($opt{review}) { 
+	if ($opt{showall}) { 
+		$sys{count} = $db{TableCount}; 
+	} else { 
+		$sys{count} = '5'; 
+	}
+	print_report(); 
+}
