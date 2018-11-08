@@ -612,6 +612,7 @@ sub print_report {
 			printf $f{xsidx}, $dbname, $key, @{$db{excessindex}{$key}};
 			$count++;
 		}
+                if ($sys{count} < scalar (keys $db{excessindex})) { print "Showing a maximum of $sys{count}/" . scalar (keys $db{excessindex}) . " tables. Use the '-showall' option to print all tables.\n"; }
 	}
 
 # Table Cache
