@@ -376,15 +376,28 @@ sub run_queries {
 
 }
 
+sub gfl {
+	my ($field, $type) = @_;
+	$type ||= 0;
+	my $largest = "";
+	my $value;
+	foreach my $key (keys $db{$field}) {
+		$type == 1 ? ($value = $key) : ($value = @{$db{$field}{$key}}[0]);
+		if ( length($value) >= length($largest) ) {
+			$largest = $value;
+		}
+	}
+	return((length($largest) + 2) < 10 ? "10" : (length($largest) + 2));
+}
+
 sub set_format {
 	$f{disk} = "%5s %5s %5s %5s %-60s\n";
 	$f{db} = "%-30s %20s\n";
 	$f{table} = "%-7s %7s %10s %10s %10s %10s %10s\n";
-	$f{frag} = "%-20s %-48s %-10s %-10s\n";
-	$f{keys} = "%-20s %-20s\n";
-	$f{noidx} = "%-20s %-48s %-20s %-10s %-10s\n";
-	$f{xsidx} = "%-20s %-48s %-20s\n";
-	
+        $f{frag} = "%-" . gfl('frag') . "s %-" . gfl('frag',1) . "s %-10s %-10s\n";
+        $f{keys} = "%-" . gfl('ukeys') . "s %-" . gfl('ukeys',1) . "s\n";
+        $f{noidx} = "%-" . gfl('noindex') . "s %-" . gfl('noindex',1) . "s %-20s %-10s %-10s\n";
+        $f{xsidx} = "%-" . gfl('excessindex') . "s %-" . gfl('excessindex',1) . "s %-20s\n";
 	unless($opt{format}) {
 		foreach my $key (keys %f) {
 			$f{$key} =~ s/-?\d+?(\w)\s/$1,/g;
@@ -396,10 +409,13 @@ sub set_format {
 sub search {
         my @hashrefs = (\%vars, \%stats);
         my $count;
+	my $lg;
         foreach my $ref(@hashrefs) {
                 my @results = grep { /$opt{query}/i } keys %{ $ref };
-                if (@results) { print "\n_________________________ [" . (defined $count ? "Global Status" : "Global Variables") .  "] _________________________\n\n"; }
-                foreach(@results) { printf "%-50s %-20s\n", $_, $$ref{$_}; }
+                if (@results) { print "\n_________________________" . (defined $count ? "_ [Global Status] _" : " [Global Variables] ") .  "_________________________\n\n"; }
+		unless (defined $lg) { $lg = "50"; }
+		foreach(@results) { if (length($_) >= $lg) { $lg = (length($_) + 2); } }
+                foreach(@results) { printf "%-${lg}s %-20s\n", $_, $$ref{$_}; }
                 $count++;
         }
         print "\n";
@@ -453,7 +469,7 @@ sub print_summary {
 	if (int(($stats{Select_range_check} + $stats{Select_full_join}) / ($stats{Uptime} / 86400)) >= 5000) { print "High number of joins without an index.\n"; }
 	if (( $vars{'query_cache_type'} =~  /^(ON|DEMAND|1|2)$/ ) and (not defined $db{tables}{MyISAM})) { print "MySQL: Query cache enabled, but no MyISAM tables found.\n"; }
 	
-	unless ($opt{dba}) { print "\n_________________________ [CogecoPeer1 DBA Summary] _________________________\n\n"; }
+	unless ($opt{review}) { print "\n_________________________ [CogecoPeer1 DBA Summary] _________________________\n\n"; }
 
 }
 
