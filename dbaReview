@@ -345,7 +345,7 @@ sub run_queries {
                   round((data_free /1024/1024),0) AS FREE, 
                   engine FROM information_schema.tables 
                   WHERE table_schema  NOT IN ('information_schema', 'mysql') 
-                  AND (data_free/1024/1024) > 0;"); # TODO: revert to 50 after testing
+                  AND (data_free/1024/1024) > 50;"); 
 	query_db($sql, 'frag');
 
 	# Tables - No primary / unique keys
@@ -381,6 +381,7 @@ sub gfl {
 	$type ||= 0;
 	my $largest = "";
 	my $value;
+	return(10) unless (defined $db{$field});
 	foreach my $key (keys $db{$field}) {
 		$type == 1 ? ($value = $key) : ($value = @{$db{$field}{$key}}[0]);
 		if ( length($value) >= length($largest) ) {
@@ -407,19 +408,29 @@ sub set_format {
 }
 
 sub search {
-        my @hashrefs = (\%vars, \%stats);
+	my @hashrefs = (\%vars, \%stats);
         my $count;
-	my $lg;
+        my $lg;
         foreach my $ref(@hashrefs) {
                 my @results = grep { /$opt{query}/i } keys %{ $ref };
-                if (@results) { print "\n_________________________" . (defined $count ? "_ [Global Status] _" : " [Global Variables] ") .  "_________________________\n\n"; }
-		unless (defined $lg) { $lg = "50"; }
-		foreach(@results) { if (length($_) >= $lg) { $lg = (length($_) + 2); } }
+                my %hash_inverted;
+                for (keys %{ $ref }) {
+                        my $value = $$ref{$_};
+                        push @{ $hash_inverted{$value} }, $_;
+                }
+                my @vresults = grep { /$opt{query}/i }  keys %hash_inverted;
+                if (@results or @vresults) { print "\n_________________________" . (defined $count ? "_ [Global Status] _" : " [Global Variables] ") .  "_________________________\n\n"; }
+                unless (defined $lg) { $lg = "50"; }
+                foreach(@results) { if (length($_) >= $lg) { $lg = (length($_) + 2); } }
                 foreach(@results) { printf "%-${lg}s %-20s\n", $_, $$ref{$_}; }
+		foreach(@vresults) { 
+                        foreach my $value (@{$hash_inverted{$_}}) {
+                                printf "%-${lg}s %-20s\n", $value, $_ ; 
+                        }
+                }
                 $count++;
         }
-        print "\n";
-        exit;
+	exit;
 }
 
 sub debug {
