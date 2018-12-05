@@ -9,13 +9,36 @@ use Getopt::Long;
 my $version = "2.0.0.alpha";
 
 
-our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f); 
+our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
 
 GetOptions(
         \%opt, 'username=s', 'password=s', 'help', 'host=s', 'socket=s', 'update', 'format', 'review', 'debug=s', 'query=s', 'showall', 
 );
 
 $mycnf{host} = "127.0.0.1";
+
+sub usage {
+        print "\n"
+        . "$0 v.${version}\n"
+        . "Usage:\n\n"
+        . "-user 	<username>      Specify user\n"
+        . "-pass 	<password>      Specify password\n"
+        . "-host 	<host>          Specify IP/host\n"
+        . "-socket <socket>      	Specify socket\n"
+        . "-help 			Usage (this message)\n"
+        . "-update            	Update to latest version\n"
+	. "-query	<search term>	Search MySQL variables / status for <search term>\n"
+	. " 			Case insensitive and accepts perl style regex e.g. -q 'innodb.+(size|type)'\n"
+	. "			Also supports searching values of variables e.g. -q 3306\n"            
+	. "-review			Print full diagnostic data\n"
+	. "-showall		Print all tables with issues rather than top 10 (May take a while!)\n"
+	. "-format			Use with -review for formatted tables (default is csv)\n"
+        . "\n"
+        . "* If no user or password is supplied, this script will attempt to login using\n"
+        . "either Plesk credentials (if installed) or as a fallback it will check ~/.my.cnf.\n\n";
+        exit;
+}
+
 
 sub get_mycnf {
         # No user / pass was supplied
@@ -60,7 +83,17 @@ sub get_stats {
         $db{key_read_ratio} = sprintf "%.0f",($stats{'Key_read_requests'} ? 100 - ($stats{'Key_reads'} / $stats{'Key_read_requests'}) * 100 : 0);
         $db{key_write_ratio} = sprintf "%.0f",($stats{'Key_write_requests'} ? 100 - ($stats{'Key_writes'} / $stats{'Key_write_requests'}) * 100 : 0);
         $db{key_cache_block_size} = (defined $vars{'key_cache_block_size'} ? $vars{'key_cache_block_size'} : 1024);
-
+	$db{innodb_buffer_used} = ($stats{'Innodb_buffer_pool_pages_total'} - $stats{'Innodb_buffer_pool_pages_free'}) * $stats{'Innodb_page_size'};
+	$db{innodb_buffer_total} = $stats{'Innodb_buffer_pool_pages_total'} * $stats{'Innodb_page_size'};
+	$db{innodb_buffer_hits} = sprintf "%.0f", ($stats{'Innodb_buffer_pool_read_requests'} ? 100 - ($stats{'Innodb_buffer_pool_reads'} / $stats{'Innodb_buffer_pool_read_requests'}) * 100 : 0);
+	$stats{Innodb_deadlocks} = exists $stats{Innodb_deadlocks} ? $stats{Innodb_deadlocks} : 0;
+        $query = $dbh->prepare("SHOW SLAVE STATUS;");
+        $query->execute();
+        while (my $myhr = $query->fetchrow_hashref()) {
+                for (keys %$myhr) {
+                        $db{replication}{$_} = $$myhr{$_};
+                }
+        }
 }
 
 sub get_vars {
@@ -79,6 +112,7 @@ sub get_vars {
 }
 
 sub short {
+	# Shortens numbers.
         # number, is it kilobytes?, decimal places
         my ($number, $kb, $d) = @_;
         my $n = 0;
@@ -115,12 +149,14 @@ sub sec2time {
 }
 
 sub percent {
+	# Find the percentage
         my($is, $of) = @_;
         return sprintf "%.0f", ($is * 100) / ($of ||= 1);
 }
 
 sub ordsuf ($) {
-# package Lingua::EN::Numbers::Ordinate
+	# package Lingua::EN::Numbers::Ordinate
+	# Provides the correct suffix to a number e.g. 1st 2nd 3rd 4th etc...
 	return 'th' if not(defined($_[0])) or not( 0 + $_[0] );
 	my $n = abs($_[0]);  
 	return 'th' unless $n == int($n);
@@ -143,7 +179,6 @@ sub get_memory_usage {
         }
         close MEMINFO;
 # MySQL
-	$mem{InnoDBBufferPoolSize} = sprintf "%.0f",(((($mem{MemTotal} / 100) * 80) / 1024) / 1024);
         $mem{MySQLBase} = ($vars{key_buffer_size} + $vars{query_cache_size} + $vars{innodb_buffer_pool_size} + $vars{innodb_additional_mem_pool_size} + $vars{innodb_log_buffer_size});
         $mem{MySQLPerConnection} = ($vars{read_buffer_size} + $vars{read_rnd_buffer_size} + $vars{sort_buffer_size} + $vars{join_buffer_size} + $vars{binlog_cache_size} + $vars{thread_stack});
 	$mem{MySQLPossibleMaxConnections} = int ((((($mem{MemTotal} * 1024) / 100) * 90) - $mem{MySQLBase}) / $mem{MySQLPerConnection});
@@ -177,7 +212,7 @@ sub get_disk_usage {
 			$fsinfo{$filesystem}{Available} = $fields[3];
 			$fsinfo{$filesystem}{PercentUsed} = $fields[4];
 	                if ($fsinfo{$filesystem}{PercentUsed} >= 90) {
-	                        unless ($filesystem =~ /run/) { push @{$sys{DiskAlerts}}, "The '$filesystem' filesystem is $fsinfo{$filesystem}{PercentUsed}% used.\n";}
+	                        unless ($filesystem =~ /run/) { push @{$summary{Disk}}, "[*] The '$filesystem' filesystem is $fsinfo{$filesystem}{PercentUsed}% used.\n";}
 	                }
 
 		}
@@ -324,14 +359,15 @@ sub run_queries {
                  ORDER BY sum(data_length+index_length) DESC LIMIT 10;");
 	query_db($sql, 'tables');
 	
-	foreach my $engine (keys $db{tables}) {
+	foreach my $engine (keys %{$db{tables}}) {
 		$db{TableCount} += $db{tables}{$engine}[0];
 	}
 
+	# Workout the optimal thread_cache_size (8 + (max_connections / 100) but no more than 100)
         $db{Threads} = short(8 + ( $vars{'max_connections'} / 100)); 
 	if ($db{Threads}  >= 100 ) { $db{Threads} = '100'; }
 
-	# InnoDB
+	# Workout the minimum recommended innodb_buffer_pool_size 
 	$sql = ("SELECT CEILING(Total_InnoDB_Bytes) RIBPS FROM
  		(SELECT SUM(data_length+index_length) Total_InnoDB_Bytes
  		FROM information_schema.tables WHERE engine='InnoDB') A;");
@@ -357,7 +393,7 @@ sub run_queries {
 	query_db($sql, 'ukeys');
 	
 	# Tables - No index
-	foreach my $dbname (keys $db{database}) {
+	foreach my $dbname (keys %{$db{database}}) {
 		$sql = ("SELECT table_name,table_schema,table_collation,engine,table_rows FROM INFORMATION_SCHEMA.tables 
          		 WHERE table_schema = '$dbname' AND table_rows IS NOT NULL 
                 	 AND table_name NOT IN ( SELECT table_name FROM ( SELECT table_name, index_name FROM information_schema.statistics WHERE table_schema = '$dbname' 
@@ -366,7 +402,7 @@ sub run_queries {
 	}	
 
 	# Tables - Excessive indexes
-        foreach my $dbname (keys $db{database}) {
+        foreach my $dbname (keys %{$db{database}}) {
 		$sql = ("select  table_name, table_schema, count(*) from 
 			( SELECT  table_schema,table_name, index_name FROM information_schema.statistics  
 			WHERE table_schema = '$dbname' GROUP BY  table_name, index_name) 
@@ -377,12 +413,13 @@ sub run_queries {
 }
 
 sub gfl {
+	# Get the max field length to allow prettier formating
 	my ($field, $type) = @_;
 	$type ||= 0;
 	my $largest = "";
 	my $value;
 	return(10) unless (defined $db{$field});
-	foreach my $key (keys $db{$field}) {
+	foreach my $key (keys %{$db{$field}}) {
 		$type == 1 ? ($value = $key) : ($value = @{$db{$field}{$key}}[0]);
 		if ( length($value) >= length($largest) ) {
 			$largest = $value;
@@ -392,6 +429,7 @@ sub gfl {
 }
 
 sub set_format {
+	# Set the 'printf' formatting string or unset for csv output
 	$f{disk} = "%5s %5s %5s %5s %-60s\n";
 	$f{db} = "%-30s %20s\n";
 	$f{table} = "%-7s %7s %10s %10s %10s %10s %10s\n";
@@ -408,9 +446,11 @@ sub set_format {
 }
 
 sub search {
+	# Enable searching through the MySQL variables and status
+	# Case insensitive and accepts perl style regex e.g. -q 'innodb.+(size|type)'
 	my @hashrefs = (\%vars, \%stats);
-        my $count;
-        my $lg;
+        my $c;
+        my $lg; 
         foreach my $ref(@hashrefs) {
                 my @results = grep { /$opt{query}/i } keys %{ $ref };
                 my %hash_inverted;
@@ -419,21 +459,22 @@ sub search {
                         push @{ $hash_inverted{$value} }, $_;
                 }
                 my @vresults = grep { /$opt{query}/i }  keys %hash_inverted;
-                if (@results or @vresults) { print "\n_________________________" . (defined $count ? "_ [Global Status] _" : " [Global Variables] ") .  "_________________________\n\n"; }
+                if (@results or @vresults) { print "\n_________________________" . (defined $c ? "_ [Global Status] _" : " [Global Variables] ") .  "_________________________\n\n"; }
                 unless (defined $lg) { $lg = "50"; }
                 foreach(@results) { if (length($_) >= $lg) { $lg = (length($_) + 2); } }
                 foreach(@results) { printf "%-${lg}s %-20s\n", $_, $$ref{$_}; }
 		foreach(@vresults) { 
                         foreach my $value (@{$hash_inverted{$_}}) {
-                                printf "%-${lg}s %-20s\n", $value, $_ ; 
+                                printf "%-${lg}s %-20s\n", $value, $_ unless grep { $_ eq $value } @results; 
                         }
                 }
-                $count++;
+                $c++;
         }
 	exit;
 }
 
 sub debug {
+	# Quick and easy way to debug various hashes
         use Data::Dumper;
         if ($opt{debug} =~ /fsinfo/) { print Dumper \%fsinfo;}
         if ($opt{debug} =~ /cpu/) { print Dumper \%cpu;}
@@ -443,6 +484,97 @@ sub debug {
         if ($opt{debug} =~ /stats/) { print Dumper \%stats;}
         if ($opt{debug} =~ /vars/) { print Dumper \%vars;}
 	exit;
+}
+
+
+sub prep_summary {
+#cpu
+        if (defined $cpu{LoadAverageOverCount}) {
+                push @{$summary{CPU}}, "[*] The 15min load average was above 75% total utilization on $cpu{LoadAverageOverCount} times in the last $cpu{TotalSarLogs} days.\n";
+        }
+        if ($cpu{Sockets} >= 2 && $vars{innodb_numa_interleave} eq "OFF") {
+                push @{$summary{CPU}},  "[*] Non Uniform Memory Access (NUMA) is enabled in the CPUs, but not in MySQL.\n"
+		."    Adding innodb_numa_interleave=1 to the MySQL configuration may improve performance.\n";
+        }
+#mem
+        if ($mem{MySQLUsedPerc} >= 95) {
+                push @{$summary{Memory}}, "[*] MySQL is configured to use up to $mem{MySQLUsedPerc}% of the system memory.\n"
+		."    This can cause the system to swap to disk & may degrade performance\n";
+        }
+        if ($mem{SwapFreePerc} <= 90) {
+                push @{$summary{Memory}},  "[*] The system is using $mem{SwapUsed} of swap. This can dramatically reduce MySQL performance.\n";
+        }
+        if ( `sysctl -n vm.swappiness` > 10 ) {
+                push @{$summary{Memory}},   "[*] The 'swappiness' is > 10. This should be set lower than 10 to prevent unnecessary swapping.\n";
+        }
+#sys
+        if ($sys{CP1Updates} eq 1) { push @{$summary{System}},  "[*] Automatic updating is disabled. You can enable this by installing the 'yum-p1mh-autoupdates' package.\n"; }
+        if ($sys{KernelInUse} ne $sys{LastKernelVersion}) { push @{$summary{System}}, "[*] A kernel update requires a reboot.\n"; }
+        unless ($sys{BackupCronFound}) { 
+		push @{$summary{System}}, "[*] No scheduled database backup was detected.\n"
+		."    We recommend all customers backup their databases on a daily basis.\n"
+		."    If you would like assistance setting up a backup script, please let us know.\n"; 
+	}
+	unless ($sys{ulimit} =~ /unlimited/) {
+        	if ($vars{open_files_limit} > $sys{ulimit}) { 
+			push @{$summary{System}},  "[*] MySQL's open_files_limit is set higher than the system allows.\n"
+			. "    MySQL: $vars{open_file_limit} System: $sys{ulimit}.\n"; 
+		}
+	}
+#mysql
+        if ($stats{Max_used_connections} >= $vars{max_connections}) {
+                push @{$summary{Database}},  "[*] MySQL has reached the maximum number of concurrent connections ($vars{max_connections}).\n";
+                if ($mem{MySQLPossibleMaxConnections} >= $vars{max_connections}) {
+                        push @{$summary{Database}}, "    Based on the current settings the max_connections could be increased up to $mem{MySQLPossibleMaxConnections}.\n";
+                } else {
+                        push @{$summary{Database}}, "    There are insufficient resources to increase the max_connections.\n";
+                }
+        }
+        if ($db{tables}{MyISAM}) { 
+		push @{$summary{Database}}, "[*] There are $db{tables}{MyISAM}[0] MyISAM table(s).\n"
+		. "    MyISAM is an older storage engine that uses full table locking rather than row locking.\n"
+		. "    A mixed join of InnoDB and MyISAM tables will escalate to table locking.\n"
+		. "    In addition, recovering tables using MyISAM engine will be more difficult in case of a crash.\n"
+		. "    As of MySQL version 5.6, InnoDB supports full-text searching.\n"
+		. "    We recommend all customers move to using the InnoDB storage engine.\n"; 
+	}
+        unless ($vars{'tmpdir'} =~ /shm/) { push @{$summary{Database}}, "[*] For optimal performance, set the MySQL temporary directory to /dev/shm.\n"; }
+        if ($db{frag}) { push @{$summary{Database}}, "[*] There are " . scalar (keys %{$db{frag}}) . " fragmented tables.\n"; }
+        if ($db{ukeys}) { push @{$summary{Database}}, "[*] There are " . scalar (keys %{$db{ukeys}}) . " tables without a primary or unique key.\n"; }
+        if ($db{noindex}) { push @{$summary{Database}}, "[*] There are " . scalar (keys %{$db{noindex}}) . " tables without an index.\n"; }
+        if ($db{excessindex}) { push @{$summary{Database}}, "[*] There are " . scalar (keys %{$db{excessindex}}) . " tables with excessive indexes.\n"; }
+        if (short($stats{Slow_queries} / $stats{Uptime}) >= 1) { push @{$summary{Database}}, "[*] The server is averaging " . short($stats{Slow_queries} / $stats{Uptime}) . " slow queries per second.\n"; }
+        if (int(($stats{Select_range_check} + $stats{Select_full_join}) / ($stats{Uptime} / 86400)) >= 5000) { 
+		push @{$summary{Database}}, "[*] There are a high number of joins without an index.\n"
+		. "    Enable 'log_queries_not_using_indexes' to identify them.\n"; 
+	}
+        if (($vars{'query_cache_type'} =~  /^(ON|DEMAND|1|2)$/ ) and (not defined $db{tables}{MyISAM})) { push @{$summary{Database}}, "[*] The query_cache is enabled, but no MyISAM tables found.\n"; }
+        if ($db{innodb_buffer_total} <= $db{BufferSize}) { push @{$summary{Database}}, "[*] The innodb_buffer_pool_size is smaller than the InnoDB data.\n"; }
+	if ($stats{Innodb_deadlocks} >= 10) {
+		push @{$summary{Database}}, "[*] There have been $stats{Innodb_deadlocks} InnoDB deadlocks. Enable innodb_print_all_deadlocks to log them.\n";
+	}
+	if ($stats{Innodb_log_waits} > 0) {
+		push @{$summary{Database}}, "[*] There have been $stats{Innodb_log_waits} innodb_log_waits. Consider increasing the innodb_log_buffer_size.\n";
+	}
+        if (defined $db{replication}{Slave_IO_Running} && $db{replication}{Slave_IO_Running} =~ /No/)   {
+                push @{$summary{Database}}, "[*] Replication has stopped:\n"
+                . "    Slave_IO_Running: $db{replication}{Slave_IO_Running}\n"
+                . "    Error Number: $db{replication}{Last_IO_Errno}\n"
+                . "    Error Message:  $db{replication}{Last_IO_Error}\n";
+        }
+        if (defined $db{replication}{Slave_SQL_Running} && $db{replication}{Slave_SQL_Running} =~ /No/) {
+                push @{$summary{Database}}, "[*] Replication has stopped:\n"
+                . "    Slave_SQL_Running: $db{replication}{Slave_SQL_Running}\n"
+                . "    Error Number:$db{replication}{Last_SQL_Errno}\n"
+                . "    Error Message:  $db{replication}{Last_SQL_Error}\n";
+        }
+        if (defined $db{replication}{Seconds_Behind_Master} && $db{replication}{Seconds_Behind_Master} >= 1000) {
+                push @{$summary{Database}}, "[*] The slave is out of sync with the master.\n"
+		. "    Seconds_Behind_Master: $db{replication}{Seconds_Behind_Master}\n";
+        }
+
+
+
 }
 
 sub print_summary {
@@ -460,28 +592,14 @@ sub print_summary {
 	print "MySQL uptime: $sys{MySQLUptime}\n";
 	print "Queries: " . short(($stats{Questions}) / $stats{'Uptime'}) . " per second.\n";
 
-# Summary action points
-	print "\n[Summary]\n";
-	if (defined $cpu{LoadAverageOverCount}) { print "CPU: The 15min load average was above 75% total utilization on $cpu{LoadAverageOverCount} times in the last $cpu{TotalSarLogs} days.\n"; }
-	if ($mem{MySQLUsedPerc} >= 95) { print "Memory: MySQL is configured to use up to $mem{MySQLUsedPerc}% of the system memory. This can cause the system to swap to disk & may degrade performance\n"; }
-	if ($mem{SwapFreePerc} <= 90) { print  "Memory: The system is using $mem{SwapUsed} of swap. This can dramatically reduce MySQL performance.\n"; }
-	foreach(@{$sys{DiskAlerts}}) { print "Disk: $_\n"; }
-	if ($sys{CP1Updates} eq 1) { print "System: Automatic updating is disabled. You can enable this by installing the 'yum-p1mh-autoupdates' package.\n"; }
-	if ($sys{KernelInUse} ne $sys{LastKernelVersion}) { print "System: A kernel update requires a reboot.\n"; }
-	unless ($sys{BackupCronFound}) { print "Backups: No scheduled backup was detected.\n"; }
-	if ($db{tables}{MyISAM}) { print "MySQL: There are $db{tables}{MyISAM}[0] MyISAM table(s).\n"; }
-	unless ($vars{'tmpdir'} =~ /shm/) { print "MySQL: For optimal performance, set the MySQL temporary directory to /dev/shm.\n"; }      
-	if ($db{frag}) { print "MySQL: There are " . scalar (keys $db{frag}) . " fragmented tables.\n"; }
-	if ($db{ukeys}) { print "MySQL: There are " . scalar (keys $db{ukeys}) . " tables without a primary or unique key.\n"; }
-	if ($db{noindex}) { print "MySQL: There are " . scalar (keys $db{noindex}) . " tables without an index.\n"; }
-	if ($db{excessindex}) { print "MySQL: There are " . scalar (keys $db{excessindex}) . " tables with excessive indexes.\n"; }
-	if ($stats{Max_used_connections} >= $vars{max_connections}) { print "MySQL: The server has reached the max_connections ($vars{max_connections}).\n";}
-	if (short($stats{Slow_queries} / $stats{Uptime}) >= 1) { print "MySQL: The server is averaging " . short($stats{Slow_queries} / $stats{Uptime}) . " slow queries per second.\n"; }
-	if (int(($stats{Select_range_check} + $stats{Select_full_join}) / ($stats{Uptime} / 86400)) >= 5000) { print "High number of joins without an index.\n"; }
-	if (( $vars{'query_cache_type'} =~  /^(ON|DEMAND|1|2)$/ ) and (not defined $db{tables}{MyISAM})) { print "MySQL: Query cache enabled, but no MyISAM tables found.\n"; }
-	
-	unless ($opt{review}) { print "\n_________________________ [CogecoPeer1 DBA Summary] _________________________\n\n"; }
-
+# Summary 
+	my @items = ("CPU", "Memory", "Disk", "System", "Database");
+	foreach my $item(@items) {
+		print "\n$item:\n";
+		unless ($summary{$item}) { print "No issues found.\n"; next; }
+		foreach (@{$summary{$item}}) { print "$_" };
+	}
+	print "\n\n_________________________ [CogecoPeer1 DBA " . ($opt{review} ? "Report" : "Summary")  . "] _________________________\n\n";
 }
 
 sub print_report {
@@ -489,15 +607,6 @@ sub print_report {
         print "\n[CPU Info]\n";
         print "Model: $cpu{ModelName} (x$cpu{Sockets})\nCores: $cpu{TotalCores}\nThreads: $cpu{TotalThreads}\n";
         print "$cpu{TotalSarLogs} day average load: $cpu{LoadAve}\n";
-        if (defined $cpu{LoadAverageOverCount}) {
-                print "\nThe 15min load average was above 75% total utilization on $cpu{LoadAverageOverCount}  times in the last $cpu{TotalSarLogs} days.\n";
-        } else {
-                print "\nNo issues found. The CPU total utilization has stayed below 75% for the last $cpu{TotalSarLogs} days.\n";
-        }
-        if ($cpu{Sockets} >= 2 && $vars{innodb_numa_interleave} eq "OFF") {
-                print "Non Uniform Memory Access (NUMA) is enabled in the CPUs, but not in MySQL.\n";
-                print "Adding innodb_numa_interleave=1 to the MySQL configuration may improve performance.\n";
-        }
 
 # Memory usage
 	print "\n[Memory Usage]\n";
@@ -506,28 +615,6 @@ sub print_report {
 	print "MySQL max configured memory: $mem{MySQLMaxConfigured} ($mem{MySQLUsedPerc}%)\n";
 	print "MySQL max used memory: $mem{MySQLMaxUsed}\n";
 	print "Base memory: $mem{MySQLBase} | Per Connection: $mem{MySQLPerConnection} | Max Connections: $vars{max_connections} | Max used Connections: $stats{Max_used_connections}\n\n";
-	if ($mem{MySQLUsedPerc} >= 95) {
-		print "MySQL is configured to use up to $mem{MySQLUsedPerc}% of the system memory.\nThis can cause the system to swap to disk & may degrade performance\n";
-		$mem{MySQLWarn} = 1;
-	}
-        if ($mem{SwapFreePerc} <= 90) {
-                print  "The system is using $mem{SwapUsed} of swap. This can dramatically reduce MySQL performance.\n";
-		$mem{MySQLWarn} = 1;
-        }
-        if ( `sysctl -n vm.swappiness` > 10 ) {
-                print "Swappiness is > 10. This should be set lower than 10 to prevent unnecessary swapping.\n";
-		$mem{MySQLWarn} = 1;
-        }
-	if ($stats{Max_used_connections} >= $vars{max_connections}) {
-		print "MySQL has reached the maximum number of concurrent connections.\n";
-		if ($mem{MySQLPossibleMaxConnections} >= $vars{max_connections}) {
-			print "Based on the current settings the max_connections could be increased up to $mem{MySQLPossibleMaxConnections}.\n";
-		} else {
-			print "There are insufficient resources to increase the max_connections.\n";
-		}
-		$mem{MySQLWarn} = 1;
-	}
-	unless (defined $mem{MySQLWarn}) { print "No issues found.\n"; }
 
 # Disk usage
         my @disk_alerts;
@@ -537,8 +624,6 @@ sub print_report {
                 printf $f{disk}, $fsinfo{$filesystem}{TotalSize},$fsinfo{$filesystem}{Used},$fsinfo{$filesystem}{Available},$fsinfo{$filesystem}{PercentUsed},$filesystem;
         }
         print "\n";
-        foreach(@{$sys{DiskAlerts}}) { print "$_"; }
-        unless (@{$sys{DiskAlerts}}) { print "No issues found.\n"; }
 
 # System Updates
 	print "\n[System Updates]\n";
@@ -546,16 +631,6 @@ sub print_report {
 	print "Last reboot time: $sys{TimeOfReboot}\n";
 	print "Kernel in use: $sys{KernelInUse}\n";
 	print "Kernel update: $sys{LastKernelVersion}\n";
-	if ($sys{KernelInUse} ne $sys{LastKernelVersion}) {
-		print "\nA kernel update requires a reboot.\n";
-	} else {
-		print "\nRunning latest kernel update.\n";
-	}
-	if ($sys{CP1Updates} eq 0) {
-		print "Automatic updating is enabled.\n";
-	} else {
-		print "Automatic updating is disabled.\nYou can enable this by installing the 'yum-p1mh-autoupdates' package.\n";
-	}
 
 # Backups
 	print "\n[Backups]\n";
@@ -575,23 +650,18 @@ sub print_report {
 	} else {
 		print "Tivoli installed? [N] - Tivoli backup was not detected on this server.\n\n";
 	}
-	if ($sys{BackupWarn}) {
-		print "We recommend all customers backup their databases on a daily basis.\nIf you would like assistance setting up a backup script, please let us know.\n";
-	} else {
-		print "No issues found.\n";
-	}
 
 # Databases
 	print "\n[Databases]\n";
 	printf $f{db}, "Database Name", "Database size (MB)";
-	foreach my $key ( sort { $db{database}{$b}[0] <=> $db{database}{$a}[0] } keys $db{database} ) {
+	foreach my $key ( sort { $db{database}{$b}[0] <=> $db{database}{$a}[0] } keys %{$db{database}} ) {
 		printf $f{db}, $key, @{$db{database}{$key}};
 	}
 
 # Tables
 	print "\n[Tables]\n";
 	printf $f{table}, "Engine", "  Tables", "Rows", "Data", "Index", "Size", "idxfrac";
-	foreach my $key ( sort { $db{tables}{$b}[0] <=> $db{tables}{$a}[0] } keys $db{tables} ) {
+	foreach my $key ( sort { $db{tables}{$b}[0] <=> $db{tables}{$a}[0] } keys %{$db{tables}} ) {
 		printf $f{table}, $key, @{$db{tables}{$key}};
 	}
 
@@ -600,46 +670,46 @@ sub print_report {
 		print "\n[Fragmented Tables]\n";
 		printf $f{frag}, "Database", "Table", "Free (MB)", "Engine";
 		my $count = 1;
-		foreach my $key (sort { $db{frag}{$b}[1] <=> $db{frag}{$a}[1] } keys $db{frag}) {
+		foreach my $key (sort { $db{frag}{$b}[1] <=> $db{frag}{$a}[1] } keys %{$db{frag}}) {
 			my $dbname = shift @{$db{frag}{$key}};
 	                printf $f{frag}, $dbname, $key, @{$db{frag}{$key}} if ($count <= $sys{count});
 			$count++;
 		}
-		if ($sys{count} < scalar (keys $db{frag})) { print "Showing a maximum of $sys{count}/" . scalar (keys $db{frag}) . " tables. Use the '-showall' option to print all tables.\n"; }
+		if ($sys{count} < scalar (keys %{$db{frag}})) { print "Showing a maximum of $sys{count}/" . scalar (keys %{$db{frag}}) . " tables. Use the '-showall' option to print all tables.\n"; }
 	}
 	if ($db{ukeys}) {
 		print "\n[Missing Primary / Unique Keys]\n";
 		printf $f{keys}, "Database", "Table";
 		my $count = 1;
-		foreach my $key (keys $db{ukeys}) {
+		foreach my $key (keys %{$db{ukeys}}) {
 			my $dbname = shift @{$db{ukeys}{$key}};
 			printf $f{keys}, $dbname, $key, @{$db{ukeys}{$key}}  if ($count <= $sys{count});
 			$count++;
 		}
-		if ($sys{count} < scalar (keys $db{ukeys})) { print "Showing a maximum of $sys{count}/" . scalar (keys $db{ukeys}) . " tables. Use the '-showall' option to print all tables.\n"; }
+		if ($sys{count} < scalar (keys %{$db{ukeys}})) { print "Showing a maximum of $sys{count}/" . scalar (keys %{$db{ukeys}}) . " tables. Use the '-showall' option to print all tables.\n"; }
 	}
 
 	if ($db{noindex}) {
 		print "\n[No Indexes]\n";
 		printf $f{noidx}, "Database", "Table", "Collation", "Engine", "Rows";	
 		my $count = 1;
-		foreach my $key (keys $db{noindex}) {
+		foreach my $key (keys %{$db{noindex}}) {
 			my $dbname = shift @{$db{noindex}{$key}};
 			printf $f{noidx}, $dbname, $key, @{$db{noindex}{$key}} if ($count <= $sys{count});		
 			$count++;
 		}
-		if ($sys{count} < scalar (keys $db{noindex})) { print "Showing a maximum of $sys{count}/" . scalar (keys $db{noindex}) . " tables. Use the '-showall' option to print all tables.\n"; }
+		if ($sys{count} < scalar (keys %{$db{noindex}})) { print "Showing a maximum of $sys{count}/" . scalar (keys %{$db{noindex}}) . " tables. Use the '-showall' option to print all tables.\n"; }
 	}
 	if ($db{excessindex}) {
 		print "\n[Excess Indexes]\n";
 		printf $f{xsidx}, "Database", "Table", "Indexes";
 		my $count = 1;
-		foreach my $key (keys $db{excessindex}) {
+		foreach my $key (keys %{$db{excessindex}}) {
 			my $dbname = shift @{$db{excessindex}{$key}};
 			printf $f{xsidx}, $dbname, $key, @{$db{excessindex}{$key}};
 			$count++;
 		}
-                if ($sys{count} < scalar (keys $db{excessindex})) { print "Showing a maximum of $sys{count}/" . scalar (keys $db{excessindex}) . " tables. Use the '-showall' option to print all tables.\n"; }
+                if ($sys{count} < scalar (keys %{$db{excessindex}})) { print "Showing a maximum of $sys{count}/" . scalar (keys %{$db{excessindex}}) . " tables. Use the '-showall' option to print all tables.\n"; }
 	}
 
 # Table Cache
@@ -647,24 +717,16 @@ sub print_report {
 	print "Open: $stats{'Open_tables'} of $vars{'table_cache'} Cached: " . percent($stats{'Open_tables'}, $vars{'table_cache'}) . "% \n";
 	print "Opened: " . short($stats{'Opened_tables'}) . " (" . short($stats{'Opened_tables'} / $stats{'Uptime'}, 0, 1) . "/s)\n";
 
-	# Check if ulimit is set to unlimited
-	unless ($sys{ulimit} =~ /unlimited/) {
-		# $vars{open_files_limit} should be <  $sys{ulimit}
-		if ($vars{open_files_limit} > $sys{ulimit}) { print "MySQL's open_files_limit is set higher than the system allows.\nMySQL: $vars{open_file_limit}\nSystem: $sys{ulimit}\n"; }
-	}
-
 # Temp tables			
         print "\n[Temporary Tables]\n";
         print "Total: $stats{Created_tmp_tables}\n";
         print "Disk: $stats{Created_tmp_disk_tables} (" . percent($stats{Created_tmp_disk_tables}, $stats{Created_tmp_tables}) . "%)\n";
         print "Tmpdir: $vars{tmpdir}\n";
-        unless ($vars{tmpdir} =~ /shm/) { print "\nFor optimal performance, set the MySQL temporary directory to /dev/shm.\n";}
 
 # Connections
         print "\n[Connections]\n";
         print "Max used: $stats{Max_used_connections} of $vars{max_connections} (" . percent($stats{Max_used_connections},$vars{max_connections}) . "%)\n";
         print "Total: $stats{Connections}\n";
-        if ($stats{Max_used_connections} >= $vars{max_connections}) { print "\nThe server has reached the max_connections ($vars{max_connections}).\n";}
 
 # Thread Cache Size
         print "\n[Thread Cache Size]\n";
@@ -700,11 +762,10 @@ sub print_report {
         if ( $vars{'query_cache_type'} =~  /^(ON|DEMAND|1|2)$/ ) {
 		print "Memory usage: " . short($vars{query_cache_size} - $stats{Qcache_free_memory},1) . " of " . short($vars{query_cache_size},1) . " (" . percent(($vars{query_cache_size} - $stats{Qcache_free_memory}), $vars{query_cache_size}) . "%)\n"; 
 		print "Hits per sec: " . short($stats{'Qcache_hits'} / $stats{Uptime}) . "\n";		
-		print "Hit rate: " . short(($stats{'Qcache_hits'} / ($stats{'Qcache_hits'} + $stats{'Qcache_inserts'} + $stats{'Qcache_not_cached'})) * 100) . "%\n";
+                if ($stats{Qcache_hits}) {print "Hit rate: " . short(($stats{'Qcache_hits'} / ($stats{'Qcache_hits'} + $stats{'Qcache_inserts'} + $stats{'Qcache_not_cached'})) * 100) . "%\n"; }
                 print "\n[Qcache Stats]\n";
                 print "SELECT: $db{select}\nINSERT: $db{insert}\nREPLACE: $db{replace}\nUPDATE: $db{update}\nDELETE: $db{delete}\n";
                 print "Lowmem prunes: $stats{'Qcache_lowmem_prunes'}\nNot Cached: $stats{'Qcache_not_cached'}\nQueries in Cache: $stats{'Qcache_queries_in_cache'}\nTotal Blocks: $stats{'Qcache_total_blocks'}\n";
-		unless ($db{tables}{MyISAM}) { print "\nNo MyISAM tables found. Disable query_cache for optimal performance\n"; }
 	}
 
 # key buffer
@@ -712,27 +773,71 @@ sub print_report {
 	print "Used: " . short(($stats{Key_blocks_used} * $db{key_cache_block_size}), 1) . " of " . short($vars{key_buffer_size}, 1) . " (" . percent(($stats{Key_blocks_used} * $db{key_cache_block_size}), $vars{key_buffer_size}) . "%)\n";
 	print "Write Hit: $db{key_write_ratio}%\nRead Hit: $db{key_read_ratio}%\n";
 
-##
+#
 # # InnoDB
 #
+	if (defined $db{tables}{InnoDB}) {
+# buffer_pool
+		print "\n[InnoDB Buffer Pool]\n";
+		print "Instances: $vars{'innodb_buffer_pool_instances'}\n";
+		print "Usage: " . short($db{innodb_buffer_used}) . " of " . short($db{innodb_buffer_total}) . " (" . percent($db{innodb_buffer_used}, $db{innodb_buffer_total}) . "%)\n";
+		print "Read hit: $db{innodb_buffer_hits}%\n";
+		if ($db{innodb_buffer_total} <= $db{BufferSize}) { print "Minimum recommended size: " . short($db{BufferSize}) . "\n"; }
 
-#[InnoDB Buffer Pool]
 #[InnoDB Locks]
+		print "\n[InnoDB Locks]\n";
+       		print "Waits: $stats{Innodb_row_lock_waits} (" . short($stats{Innodb_row_lock_waits} / $stats{Uptime}, 0, 1) ."/s)\n";
+       		print "Current: $stats{Innodb_row_lock_current_waits}\n";
+       		print "Average: $stats{Innodb_row_lock_time_avg}\n";
+       		print "Max: $stats{Innodb_row_lock_time_max}\n";
+       	        print "Deadlocks: $stats{Innodb_deadlocks}\n";
+
 #[InnoDB Stats]
+		print "\n[InnoDB Stats]\n";
+		print "Data:\n";
+		print " Reads: " . short($stats{Innodb_data_reads}) . "(" . short($stats{Innodb_data_reads} / $stats{Uptime}, 0, 1) . "/s)\n";
+		print " Writes: " . short($stats{Innodb_data_reads}) . "(" . short($stats{Innodb_data_reads} / $stats{Uptime}, 0, 1) . "/s)\n";
+		print "Rows:\n";
+		print " Deleted: " . short($stats{Innodb_rows_deleted}) . "(" . short($stats{Innodb_rows_deleted} / $stats{Uptime}, 0, 1) . "/s)\n";
+		print " Inserted: " . short($stats{Innodb_rows_inserted}) . "(" . short($stats{Innodb_rows_inserted} / $stats{Uptime}, 0, 1) . "/s\n";
+		print " Read: " . short($stats{Innodb_rows_read}) . "(" . short($stats{Innodb_rows_read} / $stats{Uptime}, 0, 1) . "/s)\n";
+		print " Updated: " . short($stats{Innodb_rows_updated}) . "(" . short($stats{Innodb_rows_updated} / $stats{Uptime}, 0, 1) . "/s)\n";
+
 #[InnoDB Settings]
+		print "\n[InnoDB Settings]\n";
+		print "innodb_file_per_table: $vars{innodb_file_per_table}\n";
+		print "innodb_flush_log_at_trx_commit: $vars{innodb_flush_log_at_trx_commit}\n";
+		print "inoodb_flush_method: $vars{innodb_flush_method}\n";
+		if ( $stats{Innodb_log_waits} > 0 ) {
+			print "Innodb_log_waits: $stats{Innodb_log_waits}\n";
+		}
+
 #[MySQL Roles]
+                if (defined $db{replication}{Slave_IO_Running}) {
+                        print "\n[Replication]\n";
+                        print "Master_Host: $db{replication}{Master_Host}\n";
+                        print "Slave_IO_Running: $db{replication}{Slave_IO_Running}\n";
+                        print "Slave_SQL_Running: $db{replication}{Slave_SQL_Running}\n";
+                        if (defined $db{replication}{Seconds_Behind_Master}) {
+                                print "Seconds_Behind_Master: $db{replication}{Seconds_Behind_Master}\n";
+                        }
+                        print "Slave read-only? $vars{read_only}\n";
+                        print "Bin-log format: $vars{binlog_format}\n";
+                }
+
 #[Anonymous user accounts]
 #[Accounts without passwords]
 #[Users without host restrictions]
 
 
+	}
 
 
 
 }
 
 ###TODO:  quit if not root
-
+if ($opt{help}) { usage(); }
 get_mycnf();
 connect_db();
 get_stats();
@@ -746,6 +851,7 @@ get_backup_info();
 run_queries();
 if ($opt{debug}) { debug(); }
 set_format();
+prep_summary();
 print_summary();
 if ($opt{review}) { 
 	if ($opt{showall}) { 
