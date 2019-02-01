@@ -6,7 +6,7 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.0.alpha";
+my $version = "2.0.1";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -14,8 +14,6 @@ our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %sum
 GetOptions(
         \%opt, 'username=s', 'password=s', 'help', 'host=s', 'socket=s', 'update', 'format', 'review', 'debug=s', 'query=s', 'showall', 
 );
-
-$mycnf{host} = "127.0.0.1";
 
 sub usage {
         print "\n"
@@ -36,6 +34,33 @@ sub usage {
         . "\n"
         . "* If no user or password is supplied, this script will attempt to login using\n"
         . "either Plesk credentials (if installed) or as a fallback it will check ~/.my.cnf.\n\n";
+        exit;
+}
+
+sub update {
+        print "Checking for updates...\n";
+        my $url = "https://netcrypt.eu/dl/$0";
+        my $httpcli = `which curl`;
+        chomp ($httpcli);
+        my $update;
+        if (defined ($httpcli) and -e "$httpcli") {
+                $update = `$httpcli --connect-timeout 5 --silent '$url' 2>/dev/null | grep 'my \$version'| cut -d\\\" -f2`;
+        } else {
+                print "Unable to find curl.\n";
+                exit;
+        }
+        chomp ($update);
+        unless ($update =~ /^\d\.\d.*/ ) { print "Unable to determine version number. Please update manually - wget $url\n"; exit; }
+        if ($update ne $version) {
+                print "A newer version ($update) is available. Downloading...\n";
+                my $backup = `cp $0 $0.bak`;
+                print "$0 saved as $0.bak\n";
+                my $download = `$httpcli --connect-timeout 5 --silent '$url' -o $0`;
+                chmod 0755, $0;
+                print "Updated to the latest version ($update). Please re-run $0\n";
+        } else {
+                print "You have the latest version of $0 ($version)\n";
+        }
         exit;
 }
 
@@ -185,8 +210,11 @@ sub get_memory_usage {
         $mem{MySQLMaxConnectionConfigured} = ($mem{MySQLPerConnection} * $vars{max_connections});
         $mem{MySQLMaxConnectionUsed} = ($mem{MySQLPerConnection} * $stats{Max_used_connections});
         $mem{MySQLMaxConfigured} = short(($mem{MySQLBase} + $mem{MySQLMaxConnectionConfigured}), 1);
+	$mem{MySQLMaxConfiguredRaw} = ($mem{MySQLBase} + $mem{MySQLMaxConnectionConfigured});
         $mem{MySQLMaxUsed} = short(($mem{MySQLBase} + $mem{MySQLMaxConnectionUsed}), 1);
 	$mem{MySQLUsedPerc} = percent(($mem{MySQLMaxConnectionConfigured} + $mem{MySQLBase}), ($mem{MemTotal} * 1024));
+        $mem{RemainingMem} = (($mem{MemTotal} * 1024) - ($mem{MySQLMaxConnectionConfigured} + $mem{MySQLBase}));
+
 	$mem{MySQLBase} = short($mem{MySQLBase});
 	$mem{MySQLPerConnection} = short($mem{MySQLPerConnection});
 # System
@@ -373,7 +401,29 @@ sub run_queries {
  		FROM information_schema.tables WHERE engine='InnoDB') A;");
 	query_db($sql, 'BufferSize', 1);
 
-	# Return here if there are > 10000 tables as this can cause problems
+	# Anon users
+        $sql = ("SELECT CONCAT(user, '\@', host), Super_priv FROM mysql.user WHERE TRIM(USER) = '' OR USER IS NULL");
+        query_db($sql, 'useranon');
+
+	# Users with no password
+        if ($vars{'version'} =~ /5.7/) {
+                $sql = ("SELECT CONCAT(user, '\@', host), Super_priv  FROM mysql.user WHERE authentication_string = '' OR authentication_string IS NULL");
+        } else {
+                $sql = ("SELECT CONCAT(user, '\@', host), Super_priv  FROM mysql.user WHERE password = '' OR password IS NULL");
+        }
+        query_db($sql, 'usernopasswd');
+
+	# Users with no host restrictions
+        $sql = ("SELECT CONCAT(user, '\@', host), Super_priv FROM mysql.user WHERE HOST='%'");
+        query_db($sql, 'usernohost');
+
+
+	#
+	# Return here if there are > 10000 tables     
+	# as this can cause problems (locking / slow) 
+	# (Unless -showall is selected)               
+        #
+
 	if ($db{TableCount} >= 10000 and not $opt{showall}) { return; }
 
 	# Tables - Fragmentation
@@ -492,14 +542,14 @@ sub prep_summary {
         if (defined $cpu{LoadAverageOverCount}) {
                 push @{$summary{CPU}}, "[*] The 15min load average was above 75% total utilization on $cpu{LoadAverageOverCount} times in the last $cpu{TotalSarLogs} days.\n";
         }
-        if ($cpu{Sockets} >= 2 && $vars{innodb_numa_interleave} eq "OFF") {
+        if ($cpu{Sockets} >= 2 && (exists $vars{innodb_numa_interleave} eq "OFF")) {
                 push @{$summary{CPU}},  "[*] Non Uniform Memory Access (NUMA) is enabled in the CPUs, but not in MySQL.\n"
 		."    Adding innodb_numa_interleave=1 to the MySQL configuration may improve performance.\n";
         }
 #mem
         if ($mem{MySQLUsedPerc} >= 95) {
                 push @{$summary{Memory}}, "[*] MySQL is configured to use up to $mem{MySQLUsedPerc}% of the system memory.\n"
-		."    This can cause the system to swap to disk & may degrade performance\n";
+		."    This can cause the system to swap to disk & may degrade performance.\n";
         }
         if ($mem{SwapFreePerc} <= 90) {
                 push @{$summary{Memory}},  "[*] The system is using $mem{SwapUsed} of swap. This can dramatically reduce MySQL performance.\n";
@@ -515,7 +565,7 @@ sub prep_summary {
 		."    We recommend all customers backup their databases on a daily basis.\n"
 		."    If you would like assistance setting up a backup script, please let us know.\n"; 
 	}
-	unless ($sys{ulimit} =~ /unlimited/) {
+	unless ($sys{ulimit} =~ /unlimited/i) {
         	if ($vars{open_files_limit} > $sys{ulimit}) { 
 			push @{$summary{System}},  "[*] MySQL's open_files_limit is set higher than the system allows.\n"
 			. "    MySQL: $vars{open_file_limit} System: $sys{ulimit}.\n"; 
@@ -543,13 +593,19 @@ sub prep_summary {
         if ($db{ukeys}) { push @{$summary{Database}}, "[*] There are " . scalar (keys %{$db{ukeys}}) . " tables without a primary or unique key.\n"; }
         if ($db{noindex}) { push @{$summary{Database}}, "[*] There are " . scalar (keys %{$db{noindex}}) . " tables without an index.\n"; }
         if ($db{excessindex}) { push @{$summary{Database}}, "[*] There are " . scalar (keys %{$db{excessindex}}) . " tables with excessive indexes.\n"; }
-        if (short($stats{Slow_queries} / $stats{Uptime}) >= 1) { push @{$summary{Database}}, "[*] The server is averaging " . short($stats{Slow_queries} / $stats{Uptime}) . " slow queries per second.\n"; }
+        if (short($stats{Slow_queries} / $stats{Uptime}) >= 1) { 
+		push @{$summary{Database}}, "[*] The server is averaging " . short($stats{Slow_queries} / $stats{Uptime}) . " slow queries per second.\n"
+		. "    Enable the slow_query_log to identify the cause.\n"; 
+	}
         if (int(($stats{Select_range_check} + $stats{Select_full_join}) / ($stats{Uptime} / 86400)) >= 5000) { 
 		push @{$summary{Database}}, "[*] There are a high number of joins without an index.\n"
 		. "    Enable 'log_queries_not_using_indexes' to identify them.\n"; 
 	}
         if (($vars{'query_cache_type'} =~  /^(ON|DEMAND|1|2)$/ ) and (not defined $db{tables}{MyISAM})) { push @{$summary{Database}}, "[*] The query_cache is enabled, but no MyISAM tables found.\n"; }
-        if ($db{innodb_buffer_total} <= $db{BufferSize}) { push @{$summary{Database}}, "[*] The innodb_buffer_pool_size is smaller than the InnoDB data.\n"; }
+        if ($db{innodb_buffer_total} <= $db{BufferSize}) { 
+		push @{$summary{Database}}, "[*] The innodb_buffer_pool_size (" . short($db{innodb_buffer_total}) . ") is smaller than the InnoDB data (" . short($db{BufferSize}) . ").\n";
+	}
+
 	if ($stats{Innodb_deadlocks} >= 10) {
 		push @{$summary{Database}}, "[*] There have been $stats{Innodb_deadlocks} InnoDB deadlocks. Enable innodb_print_all_deadlocks to log them.\n";
 	}
@@ -557,29 +613,43 @@ sub prep_summary {
 		push @{$summary{Database}}, "[*] There have been $stats{Innodb_log_waits} innodb_log_waits. Consider increasing the innodb_log_buffer_size.\n";
 	}
         if (defined $db{replication}{Slave_IO_Running} && $db{replication}{Slave_IO_Running} =~ /No/)   {
-                push @{$summary{Database}}, "[*] Replication has stopped:\n"
+                push @{$summary{Database}}, "[*] Replication has stopped.\n"
                 . "    Slave_IO_Running: $db{replication}{Slave_IO_Running}\n"
                 . "    Error Number: $db{replication}{Last_IO_Errno}\n"
                 . "    Error Message:  $db{replication}{Last_IO_Error}\n";
         }
         if (defined $db{replication}{Slave_SQL_Running} && $db{replication}{Slave_SQL_Running} =~ /No/) {
-                push @{$summary{Database}}, "[*] Replication has stopped:\n"
+                push @{$summary{Database}}, "[*] Replication has stopped.\n"
                 . "    Slave_SQL_Running: $db{replication}{Slave_SQL_Running}\n"
-                . "    Error Number:$db{replication}{Last_SQL_Errno}\n"
+                . "    Error Number: $db{replication}{Last_SQL_Errno}\n"
                 . "    Error Message:  $db{replication}{Last_SQL_Error}\n";
         }
         if (defined $db{replication}{Seconds_Behind_Master} && $db{replication}{Seconds_Behind_Master} >= 1000) {
                 push @{$summary{Database}}, "[*] The slave is out of sync with the master.\n"
 		. "    Seconds_Behind_Master: $db{replication}{Seconds_Behind_Master}\n";
         }
-
-
-
+        my @usersec = ("useranon", "usernopasswd", "usernohost");
+        my %replace = (
+                "useranon" => "Anonymous user USER has SUPER privileges.",
+                "usernopasswd" => "User USER has SUPER privileges but no password.",
+                "usernohost" => "User USER has SUPER privileges but no host restrictions.",
+        );
+        foreach my $type(@usersec) {
+                if ($db{$type}) {
+                        foreach my $key (keys %{$db{$type}}) {
+                                if (@{$db{$type}{$key}}[0] =~ /Y/) {
+                                        (my $bad = $type ) =~ s/(useranon|usernopasswd|usernohost)/$replace{$1}/g;
+                                        $bad =~ s/USER/$key/g;
+                                        push @{$summary{Security}}, "[*] $bad\n";
+                                }
+                        }
+                }
+        }
 }
 
 sub print_summary {
 # System Summary
-	print "\n\n_________________________ [CogecoPeer1 DBA " . ($opt{review} ? "Report" : "Summary")  . "] _________________________\n\n";
+	print "\n\n________________________ [CogecoPeer1 DBA " . ($opt{review} ? "Report" : "Summary")  . "] ________________________\n\n";
 	print "Version: $version\n";
 	print "Date: $sys{Date}\n";
 	print "Hostname: $sys{Hostname}\n";
@@ -593,13 +663,13 @@ sub print_summary {
 	print "Queries: " . short(($stats{Questions}) / $stats{'Uptime'}) . " per second.\n";
 
 # Summary 
-	my @items = ("CPU", "Memory", "Disk", "System", "Database");
+	my @items = ("CPU", "Memory", "Disk", "System", "Database", "Security",);
 	foreach my $item(@items) {
 		print "\n$item:\n";
 		unless ($summary{$item}) { print "No issues found.\n"; next; }
 		foreach (@{$summary{$item}}) { print "$_" };
 	}
-	print "\n\n_________________________ [CogecoPeer1 DBA " . ($opt{review} ? "Report" : "Summary")  . "] _________________________\n\n";
+	print "\n\n________________________ [CogecoPeer1 DBA " . ($opt{review} ? "Report" : "Summary")  . "] ________________________\n\n";
 }
 
 sub print_report {
@@ -706,14 +776,14 @@ sub print_report {
 		my $count = 1;
 		foreach my $key (keys %{$db{excessindex}}) {
 			my $dbname = shift @{$db{excessindex}{$key}};
-			printf $f{xsidx}, $dbname, $key, @{$db{excessindex}{$key}};
+			printf $f{xsidx}, $dbname, $key, @{$db{excessindex}{$key}} if ($count <= $sys{count});
 			$count++;
 		}
                 if ($sys{count} < scalar (keys %{$db{excessindex}})) { print "Showing a maximum of $sys{count}/" . scalar (keys %{$db{excessindex}}) . " tables. Use the '-showall' option to print all tables.\n"; }
 	}
 
 # Table Cache
-	print "\n[Table Cache\n";
+	print "\n[Table Cache]\n";
 	print "Open: $stats{'Open_tables'} of $vars{'table_cache'} Cached: " . percent($stats{'Open_tables'}, $vars{'table_cache'}) . "% \n";
 	print "Opened: " . short($stats{'Opened_tables'}) . " (" . short($stats{'Opened_tables'} / $stats{'Uptime'}, 0, 1) . "/s)\n";
 
@@ -811,34 +881,62 @@ sub print_report {
 		if ( $stats{Innodb_log_waits} > 0 ) {
 			print "Innodb_log_waits: $stats{Innodb_log_waits}\n";
 		}
-
-#[MySQL Roles]
-                if (defined $db{replication}{Slave_IO_Running}) {
-                        print "\n[Replication]\n";
-                        print "Master_Host: $db{replication}{Master_Host}\n";
-                        print "Slave_IO_Running: $db{replication}{Slave_IO_Running}\n";
-                        print "Slave_SQL_Running: $db{replication}{Slave_SQL_Running}\n";
-                        if (defined $db{replication}{Seconds_Behind_Master}) {
-                                print "Seconds_Behind_Master: $db{replication}{Seconds_Behind_Master}\n";
-                        }
-                        print "Slave read-only? $vars{read_only}\n";
-                        print "Bin-log format: $vars{binlog_format}\n";
-                }
-
-#[Anonymous user accounts]
-#[Accounts without passwords]
-#[Users without host restrictions]
-
-
 	}
 
+#[MySQL Roles]
+	if (defined $db{replication}{Slave_IO_Running}) {
+	        print "\n[Replication]\n";
+	        print "Master_Host: $db{replication}{Master_Host}\n";
+        	print "Slave_IO_Running: $db{replication}{Slave_IO_Running}\n";
+	        print "Slave_SQL_Running: $db{replication}{Slave_SQL_Running}\n";
+	        if (defined $db{replication}{Seconds_Behind_Master}) {
+	                print "Seconds_Behind_Master: $db{replication}{Seconds_Behind_Master}\n";
+	        }
+	        print "Slave read-only? $vars{read_only}\n";
+	        print "Bin-log format: $vars{binlog_format}\n";
+	}
 
+#[Anonymous user accounts]
+        if (defined $db{useranon}) {
+                print "\n[Anonymous user accounts]\n";
+                foreach my $key (keys %{$db{useranon}}) {
+                        print "$key  " . ($db{useranon}{$key}[0] =~ /Y/ ? "\(SuperUser\)" : "")  . "\n";
+                }
+        }
 
+#[Accounts without passwords]
+        if (defined $db{usernopasswd}) {
+                print "\n[Accounts with no password]\n";
+                foreach my $key (keys %{$db{usernopasswd}}) {
+                        print "$key  " . ($db{usernopasswd}{$key}[0] =~ /Y/ ? "\(SuperUser\)" : "")  . "\n";
+                }
+        }
+
+#[Users without host restrictions]
+        if (defined $db{usernohost}) {
+                print "\n[Accounts with no host restriction]\n";
+                foreach my $key (keys %{$db{usernohost}}) {
+                        print "$key  " . ($db{usernohost}{$key}[0] =~ /Y/ ? "\(SuperUser\)" : "")  . "\n";
+                }
+        }
 }
 
-###TODO:  quit if not root
+
+
 if ($opt{help}) { usage(); }
-get_mycnf();
+if (defined $opt{'update'}) { update(); }
+$mycnf{'user'} = $opt{'username'} if (defined $opt{'username'});
+$mycnf{'pass'} = $opt{'password'} if (defined $opt{'password'});
+$mycnf{'host'} = ($opt{'host'}) ? $opt{'host'} : '127.0.0.1';
+if (defined $mycnf{'user'} and not $mycnf{'pass'}) {
+	print STDERR "Please enter the MySQL password for $mycnf{'user'}: \n";
+        system("stty -echo > /dev/null 2>&1");
+        my $passwd = <>;
+        system("stty echo > /dev/null 2>&1");
+        chomp ($passwd);
+        $mycnf{'pass'} = $passwd;
+}
+get_mycnf() unless (defined $mycnf{'user'} and $mycnf{'pass'});
 connect_db();
 get_stats();
 get_vars();
