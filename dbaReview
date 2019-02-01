@@ -239,7 +239,7 @@ sub get_disk_usage {
 			$fsinfo{$filesystem}{Used} = $fields[2];
 			$fsinfo{$filesystem}{Available} = $fields[3];
 			$fsinfo{$filesystem}{PercentUsed} = $fields[4];
-	                if ($fsinfo{$filesystem}{PercentUsed} >= 90) {
+	                if ($fsinfo{$filesystem}{PercentUsed} >= 85) {
 	                        unless ($filesystem =~ /run/) { push @{$summary{Disk}}, "[*] The '$filesystem' filesystem is $fsinfo{$filesystem}{PercentUsed}% used.\n";}
 	                }
 
