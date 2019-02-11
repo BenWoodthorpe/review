@@ -6,7 +6,7 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.2;
+my $version = "2.0.3";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -248,19 +248,53 @@ sub get_disk_usage {
 }
 
 sub get_cpu_usage {
-	my @lscpu = `lscpu`;
-	foreach my $line (@lscpu) {
-		chomp($line);
-		$line =~ s/[()]//g;
-		my ($name, $number) = split /:/, $line;	
-		$name =~ s/([\w']+)/\u\L$1/g;
-		$name =~ s/\s+//g;
-		$number =~ s/^\s+//g;
-		$cpu{$name} = $number;
+        my @lscpu;
+        if ( -e "/usr/bin/lscpu") { @lscpu = `lscpu`; }
+		if (@lscpu) {
+			foreach my $line (@lscpu) {
+				chomp($line);
+				$line =~ s/[()]//g;
+				my ($name, $number) = split /:/, $line;
+				$name =~ s/([\w']+)/\u\L$1/g;
+				$name =~ s/\s+//g;
+				$number =~ s/^\s+//g;
+				$cpu{$name} = $number;
+			}
+			$cpu{TotalCores} = ($cpu{CoresPerSocket} * $cpu{Sockets});
+			$cpu{TotalThreads} = ($cpu{ThreadsPerCore} * $cpu{TotalCores});
+			$cpu{Max15MinLoad} = ($cpu{Cpus} * 0.75);
+		} else {
+			my $m_seen = 0;
+			my $c_seen = 0;
+			my %c_count;
+			open CPUINFO, "/proc/cpuinfo" or return;
+			while (my $line = <CPUINFO>) {
+				if ($line =~ m/model name/ && $m_seen eq '0') {
+					($cpu{ModelName} = $line) =~ s/model name\s+?: (\w+?)/$1/g;
+					chomp($cpu{ModelName});
+					$m_seen = 1;
+				}
+				if ($line =~ m/cpu cores/ && $c_seen eq '0') {
+					($cpu{TotalCores} = $line) =~ s/cpu cores\s+?: (\d+?)/$1/g;
+					chomp($cpu{TotalCores});
+					$c_seen = 1;
+				}
+				if ($line =~ m/processor/) {
+					$cpu{TotalThreads}++;
+				}
+				if ($line =~ m/physical id/) {
+					my ($id, $count) = split (/:/, $line);
+					$c_count{$count} = $id;
+				}
+			}
+			$cpu{Sockets} = scalar keys %c_count;
+			unless ($cpu{TotalCores}) { $cpu{TotalCores} = "Virtual CPU"; }
+			$cpu{Max15MinLoad} = ($cpu{TotalThreads} * 0.75);
+			$cpu{Cpus} = $cpu{TotalThreads};
+
 	}
-	$cpu{TotalCores} = ($cpu{CoresPerSocket} * $cpu{Sockets});
-	$cpu{TotalThreads} = ($cpu{ThreadsPerCore} * $cpu{TotalCores});
-	$cpu{Max15MinLoad} = ($cpu{Cpus} * 0.75);
+
+########
 	unless ( -d "/var/log/sa" ) { return;}
         opendir my $dir, "/var/log/sa" or return;
         my @sar_logs = readdir $dir;
