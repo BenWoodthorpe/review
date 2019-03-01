@@ -370,7 +370,7 @@ sub get_backup_info {
 			push @{$sys{BackupCron}}, sprintf ("%02d:%02d %-10s %-50s\n",$hour,$min,"($dow)",$command);
                 }
         }
-	@{$sys{KnownBackupDirs}} = ('/backups', '/home/backups', '/var/lib/mysql/backups', '/var/backup/db', '/home/dbdumps');
+	@{$sys{KnownBackupDirs}} = ('/backup', '/backups', '/home/backups', '/var/lib/mysql/backups', '/var/backup/db', '/home/dbdumps');
 	foreach(@{$sys{KnownBackupDirs}}) {
 		if (-d $_) {
 			$sys{BackupDirFound} = "1";
