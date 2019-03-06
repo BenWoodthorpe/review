@@ -6,7 +6,7 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.4";
+my $version = "2.0.5";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -367,6 +367,11 @@ sub get_backup_info {
 				push @{$sys{BackupCron}}, sprintf ("%-15s %-10s %-50s\n", $hour,"($dow)",$command);
 				next;
 			}
+                        if ($min =~ /,|-/ || $hour =~ /,|-/) {
+	                        push @{$sys{BackupCron}}, sprintf ("Hours:%-15s Mins:%-15s %-10s %-50s\n", $hour,$min,"($dow)",$command);
+                                next;
+                        }
+
 			push @{$sys{BackupCron}}, sprintf ("%02d:%02d %-10s %-50s\n",$hour,$min,"($dow)",$command);
                 }
         }
