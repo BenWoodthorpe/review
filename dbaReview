@@ -31,6 +31,7 @@ sub usage {
 	. "-review			Print full diagnostic data\n"
 	. "-showall		Print all tables with issues rather than top 10 (May take a while!)\n"
 	. "-format			Use with -review for formatted tables (default is csv)\n"
+	. "-d tables		Print a CVS listing of all tables with missing indexes etc..\n"
         . "\n"
         . "* If no user or password is supplied, this script will attempt to login using\n"
         . "either Plesk credentials (if installed) or as a fallback it will check ~/.my.cnf.\n\n";
