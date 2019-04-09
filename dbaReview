@@ -6,7 +6,7 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.5";
+my $version = "2.0.6";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -368,7 +368,7 @@ sub get_backup_info {
 				next;
 			}
                         if ($min =~ /,|-/ || $hour =~ /,|-/) {
-	                        push @{$sys{BackupCron}}, sprintf ("Hours:%-15s Mins:%-15s %-10s %-50s\n", $hour,$min,"($dow)",$command);
+	                        push @{$sys{BackupCron}}, sprintf ("Hours:%-5s Mins:%-5s %-10s %-50s\n", $hour,$min,"($dow)",$command);
                                 next;
                         }
 
@@ -572,6 +572,40 @@ sub debug {
         if ($opt{debug} =~ /db/) { print Dumper \%db;}
         if ($opt{debug} =~ /stats/) { print Dumper \%stats;}
         if ($opt{debug} =~ /vars/) { print Dumper \%vars;}
+	if ($opt{debug} =~ /tables/) {
+		if ($db{frag}) {
+                	print "\n[Fragmented Tables]\n";
+                	printf $f{frag}, "Database", "Table", "Free (MB)", "Engine";
+                	foreach my $key (sort { $db{frag}{$b}[1] <=> $db{frag}{$a}[1] } keys %{$db{frag}}) {
+                	        my $dbname = shift @{$db{frag}{$key}};
+                        	printf $f{frag}, $dbname, $key, @{$db{frag}{$key}};
+                	}
+		}
+        	if ($db{ukeys}) {
+                	print "\n[Missing Primary / Unique Keys]\n";
+                	printf $f{keys}, "Database", "Table";
+                	foreach my $key (keys %{$db{ukeys}}) {
+                	        my $dbname = shift @{$db{ukeys}{$key}};
+                	        printf $f{keys}, $dbname, $key, @{$db{ukeys}{$key}};
+                	}
+		}
+		if ($db{noindex}) {
+                	print "\n[No Indexes]\n";
+                	printf $f{noidx}, "Database", "Table", "Collation", "Engine", "Rows";
+                	foreach my $key (keys %{$db{noindex}}) {
+                	        my $dbname = shift @{$db{noindex}{$key}};
+                	        printf $f{noidx}, $dbname, $key, @{$db{noindex}{$key}};
+                	}
+        	}
+        	if ($db{excessindex}) {
+                	print "\n[Excess Indexes]\n";
+                	printf $f{xsidx}, "Database", "Table", "Indexes";
+                	foreach my $key (keys %{$db{excessindex}}) {
+                	        my $dbname = shift @{$db{excessindex}{$key}};
+                	        printf $f{xsidx}, $dbname, $key, @{$db{excessindex}{$key}};
+                	}
+		}
+	}
 	exit;
 }
 
@@ -986,8 +1020,8 @@ get_disk_usage();
 get_system_info();
 get_backup_info();
 run_queries();
-if ($opt{debug}) { debug(); }
 set_format();
+if ($opt{debug}) { debug(); }
 prep_summary();
 print_summary();
 if ($opt{review}) { 
