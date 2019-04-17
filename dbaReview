@@ -6,7 +6,7 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.6";
+my $version = "2.0.7";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -939,13 +939,13 @@ sub print_report {
 #[InnoDB Stats]
 		print "\n[InnoDB Stats]\n";
 		print "Data:\n";
-		print " Reads: " . short($stats{Innodb_data_reads}) . "(" . short($stats{Innodb_data_reads} / $stats{Uptime}, 0, 1) . "/s)\n";
-		print " Writes: " . short($stats{Innodb_data_reads}) . "(" . short($stats{Innodb_data_reads} / $stats{Uptime}, 0, 1) . "/s)\n";
+		print " Reads: " . $stats{Innodb_data_reads} . " (" . short($stats{Innodb_data_reads} / $stats{Uptime}, 0, 1) . "/s)\n";
+		print " Writes: " . $stats{Innodb_data_writes} . " (" . short($stats{Innodb_data_writes} / $stats{Uptime}, 0, 1) . "/s)\n";
 		print "Rows:\n";
-		print " Deleted: " . short($stats{Innodb_rows_deleted}) . "(" . short($stats{Innodb_rows_deleted} / $stats{Uptime}, 0, 1) . "/s)\n";
-		print " Inserted: " . short($stats{Innodb_rows_inserted}) . "(" . short($stats{Innodb_rows_inserted} / $stats{Uptime}, 0, 1) . "/s\n";
-		print " Read: " . short($stats{Innodb_rows_read}) . "(" . short($stats{Innodb_rows_read} / $stats{Uptime}, 0, 1) . "/s)\n";
-		print " Updated: " . short($stats{Innodb_rows_updated}) . "(" . short($stats{Innodb_rows_updated} / $stats{Uptime}, 0, 1) . "/s)\n";
+		print " Deleted: " . $stats{Innodb_rows_deleted} . " (" . short($stats{Innodb_rows_deleted} / $stats{Uptime}, 0, 1) . "/s)\n";
+		print " Inserted: " . $stats{Innodb_rows_inserted} . " (" . short($stats{Innodb_rows_inserted} / $stats{Uptime}, 0, 1) . "/s\n";
+		print " Read: " . $stats{Innodb_rows_read} . " (" . short($stats{Innodb_rows_read} / $stats{Uptime}, 0, 1) . "/s)\n";
+		print " Updated: " . $stats{Innodb_rows_updated} . " (" . short($stats{Innodb_rows_updated} / $stats{Uptime}, 0, 1) . "/s)\n";
 
 #[InnoDB Settings]
 		print "\n[InnoDB Settings]\n";
