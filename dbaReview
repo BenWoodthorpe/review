@@ -966,6 +966,13 @@ sub print_report {
 	        print "Slave read-only? $vars{read_only}\n";
 	        print "Bin-log format: $vars{binlog_format}\n";
 	}
+	if (defined $vars{wsrep_cluster_name}) {
+		print "\n[XtraDB Clustering]\n";
+		print "wsrep_connected: $stats{wsrep_connected}\n";
+		print "Cluster Hosts: $vars{wsrep_cluster_address}\n";
+		print "Nodes online: $stats{wsrep_cluster_size}\n";
+		print "Local sync status: $stats{wsrep_local_state_comment}\n";
+	}
 
 #[Anonymous user accounts]
         if (defined $db{useranon}) {
