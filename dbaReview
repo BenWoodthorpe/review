@@ -6,7 +6,7 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.7";
+my $version = "2.0.8";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -406,10 +406,7 @@ sub query_db {
 
 sub run_queries {
 	# Databases
-	my $sql = ("select table_schema, truncate(sum(data_length + index_length)/1024/1024,2) 
-		    FROM information_schema.tables 
-		    WHERE table_schema not in ('mysql', 'performance_schema', 'information_schema', 'sys') 
-		    group by table_schema;");
+	my $sql = ("select table_schema,  truncate(sum(data_length + index_length)/1024/1024,2) AS size, COUNT(if (engine = 'myisam',1,NULL)) 'MyISAM', COUNT(if (engine = 'innodb',1,NULL)) 'InnoDB', COUNT(if (engine IS NULL,1,NULL)) 'Views', count(*) as Total   FROM information_schema.tables WHERE table_schema not in ('mysql', 'performance_schema', 'information_schema', 'sys') group by table_schema ORDER BY size DESC;");
 	query_db($sql, 'database');
 
 	# Tables - Engines
@@ -422,7 +419,7 @@ sub run_queries {
                  round(sum(index_length)/sum(data_length),2) idxfrac
                  FROM information_schema.TABLES
                  WHERE table_schema not in
-                 ('mysql', 'performance_schema', 'information_schema')
+                 ('mysql', 'performance_schema', 'information_schema', 'sys')
                  GROUP BY engine
                  ORDER BY sum(data_length+index_length) DESC LIMIT 10;");
 	query_db($sql, 'tables');
@@ -521,7 +518,7 @@ sub gfl {
 sub set_format {
 	# Set the 'printf' formatting string or unset for csv output
 	$f{disk} = "%5s %5s %5s %5s %-60s\n";
-	$f{db} = "%-30s %20s\n";
+	$f{db} = "%-30s %20s %6s %6s %6s %6s\n";
 	$f{table} = "%-7s %7s %10s %10s %10s %10s %10s\n";
         $f{frag} = "%-" . gfl('frag') . "s %-" . gfl('frag',1) . "s %-10s %-10s\n";
         $f{keys} = "%-" . gfl('ukeys') . "s %-" . gfl('ukeys',1) . "s\n";
@@ -797,7 +794,7 @@ sub print_report {
 
 # Databases
 	print "\n[Databases]\n";
-	printf $f{db}, "Database Name", "Database size (MB)";
+	printf $f{db}, "Database Name", "Size (MB)", "MyISAM", "InnoDB", "Views", "Total";
 	foreach my $key ( sort { $db{database}{$b}[0] <=> $db{database}{$a}[0] } keys %{$db{database}} ) {
 		printf $f{db}, $key, @{$db{database}{$key}};
 	}
