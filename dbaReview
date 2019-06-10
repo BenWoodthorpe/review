@@ -6,7 +6,7 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.8";
+my $version = "2.0.9";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -361,6 +361,9 @@ sub get_backup_info {
         	        $arr[5]=join(" ",splice(@arr,5));
                 	@{$sys{DaysOfWeek}} = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "Daily");
                 	my ($min, $hour, $dom, $month, $dow, $command) = @arr;
+			# Disregard entries that are every minute
+			# Quick workaround to cover a cron entry that matches a known script name, but is running every minute. 
+			if ($min =~ /\*/) { next; }
                         if ($dow =~ /\d/) { $dow = $sys{DaysOfWeek}[$dow]; } else { $dow = $sys{DaysOfWeek}[8]; }
 			if ($hour =~ /\//) { 
 				my @entry = split(/\//, $hour); 
