@@ -73,6 +73,7 @@ sub get_mycnf {
                 open DOTPSA, "/etc/psa/.psa.shadow" or warn "Can't open the /etc/psa/.psa.shadow file. $!\n";
                 $mycnf{pass} = <DOTPSA>;
                 close DOTPSA;
+		$mycnf{host} = 'localhost';
                 return;
         }
         open MYCNF, "$ENV{HOME}/.my.cnf" or warn "Can't open the .my.cnf file. $!\n"; # Last resort - check for ~/.my.cnf
