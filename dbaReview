@@ -6,7 +6,7 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.9";
+my $version = "2.0.10";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -346,7 +346,7 @@ sub get_system_info {
 	chomp($sys{MySQLPID} = `pidof mysqld`);
 	@{$sys{ulimit}} = split (/\s+/,`grep "open files" /proc/$sys{MySQLPID}/limits`); 
 	$sys{ulimit} = @{$sys{ulimit}}[3];
-	$sys{MySQLOpenFiles} = `lsof -p $sys{MySQLPID} | wc -l`;
+	$sys{MySQLOpenFiles} = `lsof -p $sys{MySQLPID} 2>/dev/null | wc -l`;
 	chomp(%sys);
 }
 
@@ -787,7 +787,7 @@ sub print_report {
 	if ($sys{BackupDirFound}) {
 		foreach(@{$sys{BackupDir}}) { print "Backup directory [Y] - $_\n"; } 
 	} else {
-		print "Backup directory [N] - No backup directory was found.\n\n";
+		print "Backup directory [N] - No backup directory was found.\n";
 	}
 	if ($sys{TivoliInstalled}) {
 		print "Tivoli installed? [Y] - /opt/tivoli\n"
