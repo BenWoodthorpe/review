@@ -23,7 +23,7 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.12";
+my $version = "2.0.13";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -57,7 +57,7 @@ sub usage {
 
 sub update {
         print "Checking for updates...\n";
-        my $url = "https://stuff.netcrypt.eu/dl/dbaReview";
+        my $url = "https://stuff.netcrypt.eu/dbaReview";
         my $httpcli = `which curl`;
         chomp ($httpcli);
         my $update;
