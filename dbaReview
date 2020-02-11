@@ -57,7 +57,7 @@ sub usage {
 
 sub update {
         print "Checking for updates...\n";
-        my $url = "https://netcrypt.eu/dl/$0";
+        my $url = "https://stuff.netcrypt.eu/dl/dbaReview";
         my $httpcli = `which curl`;
         chomp ($httpcli);
         my $update;
