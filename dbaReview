@@ -1,27 +1,12 @@
 #!/usr/bin/env perl 
 #
-# (c) 2012 ben@netcrypt.eu
-# ! Many parts borrowed from other scripts !
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <https://www.gnu.org/license
 
 use strict;
 use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.10";
+my $version = "2.0.11";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -380,7 +365,15 @@ sub get_backup_info {
 			# Disregard entries that are every minute
 			# Quick workaround to cover a cron entry that matches a known script name, but is running every minute. 
 			if ($min =~ /\*/) { next; }
-                        if ($dow =~ /\d/) { $dow = $sys{DaysOfWeek}[$dow]; } else { $dow = $sys{DaysOfWeek}[8]; }
+			if ($dow =~ /,/) {
+				my @rawlistofdays = split(/,/, $dow);
+				foreach (@rawlistofdays) {
+					my $day = $sys{DaysOfWeek}[$_];
+					push @{$sys{CronDoW}}, $day;
+				}
+				$dow = join(",",@{$sys{CronDoW}});
+			}
+                        elsif ($dow =~ /\d/) { $dow = $sys{DaysOfWeek}[$dow]; } else { $dow = $sys{DaysOfWeek}[8]; }
 			if ($hour =~ /\//) { 
 				my @entry = split(/\//, $hour); 
 				$hour = "Every $entry[1] hours"; 
@@ -985,7 +978,7 @@ sub print_report {
 	        print "Slave read-only? $vars{read_only}\n";
 	        print "Bin-log format: $vars{binlog_format}\n";
 	}
-	if (defined $vars{wsrep_cluster_name}) {
+	if (defined $vars{wsrep_cluster_name} && $stats{wsrep_local_state_comment}) {
 		print "\n[XtraDB Clustering]\n";
 		print "wsrep_connected: $stats{wsrep_connected}\n";
 		print "Cluster Hosts: $vars{wsrep_cluster_address}\n";
