@@ -23,7 +23,7 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.13";
+my $version = "2.0.14";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -693,10 +693,16 @@ sub prep_summary {
         if ($db{ukeys}) { push @{$summary{Database}}, "[*] There are " . scalar (keys %{$db{ukeys}}) . " tables without a primary or unique key.\n"; }
         if ($db{noindex}) { push @{$summary{Database}}, "[*] There are " . scalar (keys %{$db{noindex}}) . " tables without an index.\n"; }
         if ($db{excessindex}) { push @{$summary{Database}}, "[*] There are " . scalar (keys %{$db{excessindex}}) . " tables with excessive indexes.\n"; }
+
+## Add explaination for indexes 
+
         if (short($stats{Slow_queries} / $stats{Uptime}) >= 1) { 
 		push @{$summary{Database}}, "[*] The server is averaging " . short($stats{Slow_queries} / $stats{Uptime}) . " slow queries per second.\n"
 		. "    Enable the slow_query_log to identify the cause.\n"; 
 	}
+
+# Add explaination for slow queries
+
         if (int(($stats{Select_range_check} + $stats{Select_full_join}) / ($stats{Uptime} / 86400)) >= 5000) { 
 		push @{$summary{Database}}, "[*] There are a high number of joins without an index.\n"
 		. "    Enable 'log_queries_not_using_indexes' to identify them.\n"; 
@@ -709,6 +715,9 @@ sub prep_summary {
 	if ($stats{Innodb_deadlocks} >= 10) {
 		push @{$summary{Database}}, "[*] There have been $stats{Innodb_deadlocks} InnoDB deadlocks. Enable innodb_print_all_deadlocks to log them.\n";
 	}
+
+# Add explaination for deadlocks
+
 	if ($stats{Innodb_log_waits} > 0) {
 		push @{$summary{Database}}, "[*] There have been $stats{Innodb_log_waits} innodb_log_waits. Consider increasing the innodb_log_buffer_size.\n";
 	}
@@ -776,7 +785,7 @@ sub print_report {
 # CPU usage
         print "\n[CPU Info]\n";
         print "Model: $cpu{ModelName} (x$cpu{Sockets})\nCores: $cpu{TotalCores}\nThreads: $cpu{TotalThreads}\n";
-        print "$cpu{TotalSarLogs} day average load: $cpu{LoadAve}\n";
+        if ($cpu{TotalSarLogs}) { print "$cpu{TotalSarLogs} day average load: $cpu{LoadAve}\n"; }
 
 # Memory usage
 	print "\n[Memory Usage]\n";
