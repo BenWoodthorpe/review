@@ -23,7 +23,7 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.16";
+my $version = "2.0.17";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -775,7 +775,7 @@ sub prep_summary {
 
 sub print_summary {
 # System Summary
-	print "\n\n________________________ [CogecoPeer1 DBA " . ($opt{review} ? "Report" : "Summary")  . "] ________________________\n\n";
+	print "\n\n________________________ (CogecoPeer1 DBA " . ($opt{review} ? "Report" : "Summary")  . ") ________________________\n\n";
 	print "Version: $version\n";
 	print "Date: $sys{Date}\n";
 	print "Hostname: $sys{Hostname}\n";
@@ -795,7 +795,7 @@ sub print_summary {
 		unless ($summary{$item}) { print "No issues found.\n"; next; }
 		foreach (@{$summary{$item}}) { print "$_" };
 	}
-	print "\n\n________________________ [CogecoPeer1 DBA " . ($opt{review} ? "Report" : "Summary")  . "] ________________________\n\n";
+	print "\n\n________________________ (CogecoPeer1 DBA " . ($opt{review} ? "Report" : "Summary")  . ") ________________________\n\n";
 }
 
 sub print_report {
