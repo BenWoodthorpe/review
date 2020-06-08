@@ -23,11 +23,11 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.15";
+my $version = "2.0.16";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
-
+our $bp = "(!)";
 GetOptions(
         \%opt, 'username=s', 'password=s', 'help', 'host=s', 'socket=s', 'update', 'format', 'review', 'debug=s', 'query=s', 'showall', 
 );
@@ -259,7 +259,7 @@ sub get_disk_usage {
 			$fsinfo{$filesystem}{Available} = $fields[3];
 			$fsinfo{$filesystem}{PercentUsed} = $fields[4];
 	                if ($fsinfo{$filesystem}{PercentUsed} >= 85) {
-	                        unless ($filesystem =~ /run/ | /snap/ | /media/) { push @{$summary{Disk}}, "[*] The '$filesystem' filesystem is $fsinfo{$filesystem}{PercentUsed}% used.\n";}
+	                        unless ($filesystem =~ /run/ | /snap/ | /media/) { push @{$summary{Disk}}, "$bp The '$filesystem' filesystem is $fsinfo{$filesystem}{PercentUsed}% used.\n";}
 	                }
 
 		}
@@ -657,40 +657,40 @@ sub debug {
 sub prep_summary {
 #cpu
         if (defined $cpu{LoadAverageOverCount}) {
-                push @{$summary{CPU}}, "[*] The 15min load average was above 75% total utilization on $cpu{LoadAverageOverCount} times in the last $cpu{TotalSarLogs} days.\n";
+                push @{$summary{CPU}}, "$bp The 15min load average was above 75% total utilization on $cpu{LoadAverageOverCount} times in the last $cpu{TotalSarLogs} days.\n";
         }
         if ($cpu{Sockets} >= 2 && (exists $vars{innodb_numa_interleave} eq "OFF")) {
-                push @{$summary{CPU}},  "[*] Non Uniform Memory Access (NUMA) is enabled in the CPUs, but not in MySQL.\n"
+                push @{$summary{CPU}},  "$bp Non Uniform Memory Access (NUMA) is enabled in the CPUs, but not in MySQL.\n"
 		."    Adding innodb_numa_interleave=1 to the MySQL configuration may improve performance.\n";
         }
 #mem
         if ($mem{MySQLUsedPerc} >= 95) {
-                push @{$summary{Memory}}, "[*] MySQL is configured to use up to $mem{MySQLUsedPerc}% of the system memory.\n"
+                push @{$summary{Memory}}, "$bp MySQL is configured to use up to $mem{MySQLUsedPerc}% of the system memory.\n"
 		."    This can cause the system to swap to disk & may degrade performance.\n";
         }
         if ($mem{SwapFreePerc} <= 90) {
-                push @{$summary{Memory}},  "[*] The system is using $mem{SwapUsed} of swap. This can dramatically reduce MySQL performance.\n";
+                push @{$summary{Memory}},  "$bp The system is using $mem{SwapUsed} of swap. This can dramatically reduce MySQL performance.\n";
         }
         if ( `sysctl -n vm.swappiness` > 10 ) {
-                push @{$summary{Memory}},   "[*] The 'swappiness' is > 10. This should be set lower than 10 to prevent unnecessary swapping.\n";
+                push @{$summary{Memory}},   "$bp The 'swappiness' is > 10. This should be set lower than 10 to prevent unnecessary swapping.\n";
         }
 #sys
-        if ($sys{CP1Updates} eq 1) { push @{$summary{System}},  "[*] Automatic updating is disabled. You can enable this by installing the 'yum-p1mh-autoupdates' package.\n"; }
-        if ($sys{KernelInUse} ne $sys{LastKernelVersion}) { push @{$summary{System}}, "[*] A kernel update requires a reboot.\n"; }
+        if ($sys{CP1Updates} eq 1) { push @{$summary{System}},  "$bp Automatic updating is disabled. You can enable this by installing the 'yum-p1mh-autoupdates' package.\n"; }
+        if ($sys{KernelInUse} ne $sys{LastKernelVersion}) { push @{$summary{System}}, "$bp A kernel update requires a reboot.\n"; }
         unless ($sys{BackupCronFound}) { 
-		push @{$summary{System}}, "[*] No scheduled database backup was detected.\n"
+		push @{$summary{System}}, "$bp No scheduled database backup was detected.\n"
 		."    We recommend all customers backup their databases on a daily basis.\n"
 		."    If you would like assistance setting up a backup script, please let us know.\n"; 
 	}
 	unless ($sys{ulimit} =~ /unlimited/i) {
         	if ($vars{open_files_limit} > $sys{ulimit}) { 
-			push @{$summary{System}},  "[*] MySQL's open_files_limit is set higher than the system allows.\n"
+			push @{$summary{System}},  "$bp MySQL's open_files_limit is set higher than the system allows.\n"
 			. "    MySQL: $vars{open_file_limit} System: $sys{ulimit}.\n"; 
 		}
 	}
 #mysql
         if ($stats{Max_used_connections} >= $vars{max_connections}) {
-                push @{$summary{Database}},  "[*] MySQL has reached the maximum number of concurrent connections ($vars{max_connections}).\n";
+                push @{$summary{Database}},  "$bp MySQL has reached the maximum number of concurrent connections ($vars{max_connections}).\n";
                 if ($mem{MySQLPossibleMaxConnections} >= $vars{max_connections}) {
                         push @{$summary{Database}}, "    Based on the current settings the max_connections could be increased up to $mem{MySQLPossibleMaxConnections}.\n";
                 } else {
@@ -698,60 +698,60 @@ sub prep_summary {
                 }
         }
         if ($db{tables}{MyISAM}) { 
-		push @{$summary{Database}}, "[*] There are $db{tables}{MyISAM}[0] MyISAM table(s).\n"
+		push @{$summary{Database}}, "$bp There are $db{tables}{MyISAM}[0] MyISAM table(s).\n"
 		. "    MyISAM is an older storage engine that uses full table locking rather than row locking.\n"
 		. "    A mixed join of InnoDB and MyISAM tables will escalate to table locking.\n"
 		. "    In addition, recovering tables using MyISAM engine will be more difficult in case of a crash.\n"
 		. "    As of MySQL version 5.6, InnoDB supports full-text searching.\n"
 		. "    We recommend all customers move to using the InnoDB storage engine.\n"; 
 	}
-        unless ($vars{'tmpdir'} =~ /shm/) { push @{$summary{Database}}, "[*] For optimal performance, set the MySQL temporary directory to /dev/shm.\n"; }
-        if ($db{frag}) { push @{$summary{Database}}, "[*] There are " . scalar (keys %{$db{frag}}) . " fragmented tables.\n"; }
-        if ($db{ukeys}) { push @{$summary{Database}}, "[*] There are " . scalar (keys %{$db{ukeys}}) . " tables without a primary or unique key.\n"; }
-        if ($db{noindex}) { push @{$summary{Database}}, "[*] There are " . scalar (keys %{$db{noindex}}) . " tables without an index.\n"; }
-        if ($db{excessindex}) { push @{$summary{Database}}, "[*] There are " . scalar (keys %{$db{excessindex}}) . " tables with excessive indexes.\n"; }
+        unless ($vars{'tmpdir'} =~ /shm/) { push @{$summary{Database}}, "$bp For optimal performance, set the MySQL temporary directory to /dev/shm.\n"; }
+        if ($db{frag}) { push @{$summary{Database}}, "$bp There are " . scalar (keys %{$db{frag}}) . " fragmented tables.\n"; }
+        if ($db{ukeys}) { push @{$summary{Database}}, "$bp There are " . scalar (keys %{$db{ukeys}}) . " tables without a primary or unique key.\n"; }
+        if ($db{noindex}) { push @{$summary{Database}}, "$bp There are " . scalar (keys %{$db{noindex}}) . " tables without an index.\n"; }
+        if ($db{excessindex}) { push @{$summary{Database}}, "$bp There are " . scalar (keys %{$db{excessindex}}) . " tables with excessive indexes.\n"; }
 
 ## Add explaination for indexes 
 
         if (short($stats{Slow_queries} / $stats{Uptime}) >= 1) { 
-		push @{$summary{Database}}, "[*] The server is averaging " . short($stats{Slow_queries} / $stats{Uptime}) . " slow queries per second.\n"
+		push @{$summary{Database}}, "$bp The server is averaging " . short($stats{Slow_queries} / $stats{Uptime}) . " slow queries per second.\n"
 		. "    Enable the slow_query_log to identify the cause.\n"; 
 	}
 
 # Add explaination for slow queries
 
         if (int(($stats{Select_range_check} + $stats{Select_full_join}) / ($stats{Uptime} / 86400)) >= 5000) { 
-		push @{$summary{Database}}, "[*] There are a high number of joins without an index.\n"
+		push @{$summary{Database}}, "$bp There are a high number of joins without an index.\n"
 		. "    Enable 'log_queries_not_using_indexes' to identify them.\n"; 
 	}
-        if (($vars{'query_cache_type'} =~  /^(ON|DEMAND|1|2)$/ ) and (not defined $db{tables}{MyISAM})) { push @{$summary{Database}}, "[*] The query_cache is enabled, but no MyISAM tables found.\n"; }
+        if (($vars{'query_cache_type'} =~  /^(ON|DEMAND|1|2)$/ ) and (not defined $db{tables}{MyISAM})) { push @{$summary{Database}}, "$bp The query_cache is enabled, but no MyISAM tables found.\n"; }
         if ($db{innodb_buffer_total} <= $db{BufferSize}) { 
-		push @{$summary{Database}}, "[*] The innodb_buffer_pool_size (" . short($db{innodb_buffer_total}) . ") is smaller than the InnoDB data (" . short($db{BufferSize}) . ").\n";
+		push @{$summary{Database}}, "$bp The innodb_buffer_pool_size (" . short($db{innodb_buffer_total}) . ") is smaller than the InnoDB data (" . short($db{BufferSize}) . ").\n";
 	}
 
 	if ($stats{Innodb_deadlocks} >= 10) {
-		push @{$summary{Database}}, "[*] There have been $stats{Innodb_deadlocks} InnoDB deadlocks. Enable innodb_print_all_deadlocks to log them.\n";
+		push @{$summary{Database}}, "$bp There have been $stats{Innodb_deadlocks} InnoDB deadlocks. Enable innodb_print_all_deadlocks to log them.\n";
 	}
 
 # Add explaination for deadlocks
 
 	if ($stats{Innodb_log_waits} > 0) {
-		push @{$summary{Database}}, "[*] There have been $stats{Innodb_log_waits} innodb_log_waits. Consider increasing the innodb_log_buffer_size.\n";
+		push @{$summary{Database}}, "$bp There have been $stats{Innodb_log_waits} innodb_log_waits. Consider increasing the innodb_log_buffer_size.\n";
 	}
         if (defined $db{replication}{Slave_IO_Running} && $db{replication}{Slave_IO_Running} =~ /No/)   {
-                push @{$summary{Database}}, "[*] Replication has stopped.\n"
+                push @{$summary{Database}}, "$bp Replication has stopped.\n"
                 . "    Slave_IO_Running: $db{replication}{Slave_IO_Running}\n"
                 . "    Error Number: $db{replication}{Last_IO_Errno}\n"
                 . "    Error Message:  $db{replication}{Last_IO_Error}\n";
         }
         if (defined $db{replication}{Slave_SQL_Running} && $db{replication}{Slave_SQL_Running} =~ /No/) {
-                push @{$summary{Database}}, "[*] Replication has stopped.\n"
+                push @{$summary{Database}}, "$bp Replication has stopped.\n"
                 . "    Slave_SQL_Running: $db{replication}{Slave_SQL_Running}\n"
                 . "    Error Number: $db{replication}{Last_SQL_Errno}\n"
                 . "    Error Message:  $db{replication}{Last_SQL_Error}\n";
         }
         if (defined $db{replication}{Seconds_Behind_Master} && $db{replication}{Seconds_Behind_Master} >= 1000) {
-                push @{$summary{Database}}, "[*] The slave is out of sync with the master.\n"
+                push @{$summary{Database}}, "$bp The slave is out of sync with the master.\n"
 		. "    Seconds_Behind_Master: $db{replication}{Seconds_Behind_Master}\n";
         }
         my @usersec = ("useranon", "usernopasswd", "usernohost");
@@ -766,7 +766,7 @@ sub prep_summary {
                                 if (@{$db{$type}{$key}}[0] =~ /Y/) {
                                         (my $bad = $type ) =~ s/(useranon|usernopasswd|usernohost)/$replace{$1}/g;
                                         $bad =~ s/USER/$key/g;
-                                        push @{$summary{Security}}, "[*] $bad\n";
+                                        push @{$summary{Security}}, "$bp $bad\n";
                                 }
                         }
                 }
@@ -831,20 +831,20 @@ sub print_report {
 # Backups
 	print "\n[Backups]\n";
 	if ($sys{BackupCronFound}) { 
-		foreach(@{$sys{BackupCron}}) { print "Crontab [Y] - $_"; }
+		foreach(@{$sys{BackupCron}}) { print "Crontab (Y) - $_"; }
 	} else {
-		print "Crontab [N] - No scheduled backup was detected.\n";
+		print "Crontab (N) - No scheduled backup was detected.\n";
 		$sys{BackupWarn} = "1";
 	}
 	if ($sys{BackupDirFound}) {
-		foreach(@{$sys{BackupDir}}) { print "Backup directory [Y] - $_\n"; } 
+		foreach(@{$sys{BackupDir}}) { print "Backup directory (Y) - $_\n"; } 
 	} else {
-		print "Backup directory [N] - No backup directory was found.\n";
+		print "Backup directory (N) - No backup directory was found.\n";
 	}
 	if ($sys{TivoliInstalled}) {
-		print "Tivoli installed? [Y] - /opt/tivoli\n"
+		print "Tivoli installed? (Y) - /opt/tivoli\n"
 	} else {
-		print "Tivoli installed? [N] - Tivoli backup was not detected on this server.\n\n";
+		print "Tivoli installed? (N) - Tivoli backup was not detected on this server.\n\n";
 	}
 
 # Databases
