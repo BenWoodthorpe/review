@@ -23,7 +23,7 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.14";
+my $version = "2.0.15";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -259,7 +259,7 @@ sub get_disk_usage {
 			$fsinfo{$filesystem}{Available} = $fields[3];
 			$fsinfo{$filesystem}{PercentUsed} = $fields[4];
 	                if ($fsinfo{$filesystem}{PercentUsed} >= 85) {
-	                        unless ($filesystem =~ /run/) { push @{$summary{Disk}}, "[*] The '$filesystem' filesystem is $fsinfo{$filesystem}{PercentUsed}% used.\n";}
+	                        unless ($filesystem =~ /run/ | /snap/ | /media/) { push @{$summary{Disk}}, "[*] The '$filesystem' filesystem is $fsinfo{$filesystem}{PercentUsed}% used.\n";}
 	                }
 
 		}
@@ -339,33 +339,50 @@ sub get_cpu_usage {
 }
 
 sub get_system_info {
-        unless ( -e "/etc/redhat-release" ) { return; }
-	$sys{Hostname} = `hostname`;
-	$sys{OSVersion} = `cat /etc/redhat-release`;
-	$sys{Date} = `date "+%B %Y"`;
-	chomp($sys{Day} = `date "+%e"`);
-	$sys{DaySuffix} = ordsuf($sys{Day});
+        $sys{Hostname} = `hostname`;
+        if ( -e "/etc/redhat-release") {
+                $sys{OSVersion} = `cat /etc/redhat-release`;
+                $sys{IsRH} = 1;
+        } elsif ( -e "/etc/lsb-release") {
+                $sys{OSVersion} = `grep DISTRIB_DESCRIPTION /etc/lsb-release`;
+                $sys{OSVersion} =~ s/.*="(.*)"$/$1/;
+        } else {
+                $sys{OSVersion} = "Unknown";
+        }
+        $sys{Date} = `date "+%B %Y"`;
+        chomp($sys{Day} = `date "+%e"`);
+        $sys{DaySuffix} = ordsuf($sys{Day});
         $sys{Date} = "$sys{Day}$sys{DaySuffix} $sys{Date}";
-	@{$sys{IPAddresses}} = (`ip -o addr show up primary scope global` =~ /inet\s(\d+\.\d+\.\d+\.\d+)/g);
-	$sys{MySQLUptime} = sec2time($stats{Uptime}); 
-	($sys{LastKernelVersion}, $sys{LastUpdateTime}) = split (/ {2,}/, `rpm -q kernel --last | head -n1`);	
-	$sys{LastUpdateTime} =~ s/\s+(AM|PM).*//g;
-	($sys{UptimeSeconds} = `cat /proc/uptime`) =~ s/(^\d+?)\..*/$1/g;
-	$sys{SystemUptime} = sec2time($sys{UptimeSeconds});
-	($sys{TimeOfReboot} = time()) -= $sys{UptimeSeconds};
-	$sys{TimeOfReboot} = localtime($sys{TimeOfReboot});
+        @{$sys{IPAddresses}} = (`ip -o addr show up primary scope global` =~ /inet\s(\d+\.\d+\.\d+\.\d+)/g);
+        $sys{MySQLUptime} = sec2time($stats{Uptime});
+        if ($sys{IsRH}) {
+                ($sys{LastKernelVersion}, $sys{LastUpdateTime}) = split (/ {2,}/, `rpm -q kernel --last | head -n1`);
+                $sys{LastUpdateTime} =~ s/\s+(AM|PM).*//g;
+                $sys{LastKernelVersion} =~ s/kernel-//g;
+                $sys{CP1Updates} = `rpm -q yum-p1mh-autoupdates`;
+                $sys{CP1Updates} = $? >> 8;
+        } else {
+                $sys{LastKernelVersion} = `uname -r`;
+                $sys{LastUpdateTime} = `stat -c %Y /var/lib/apt/periodic/update-success-stamp`;
+                $sys{LastUpdateTime} = localtime($sys{LastUpdateTime});
+                my ($wd, $mn, $md, $rt, $yr) = split(' ', $sys{LastUpdateTime});
+                $md = sprintf "%02d", $md;
+                $sys{LastUpdateTime} = "$wd $md $mn $yr $rt";
+                $sys{CP1Updates} = 1;
+        }
+        ($sys{UptimeSeconds} = `cat /proc/uptime`) =~ s/(^\d+?)\..*/$1/g;
+        $sys{SystemUptime} = sec2time($sys{UptimeSeconds});
+        ($sys{TimeOfReboot} = time()) -= $sys{UptimeSeconds};
+        $sys{TimeOfReboot} = localtime($sys{TimeOfReboot});
         my ($wday, $mon, $mday, $rtime, $year) = split(' ', $sys{TimeOfReboot});
-	$mday = sprintf "%02d", $mday;
+        $mday = sprintf "%02d", $mday;
         $sys{TimeOfReboot} = "$wday $mday $mon $year $rtime";
         $sys{KernelInUse} = `uname -r`;
-	$sys{LastKernelVersion} =~ s/kernel-//g;
-	$sys{CP1Updates} = `rpm -q yum-p1mh-autoupdates`;
-	$sys{CP1Updates} = $? >> 8;
-	chomp($sys{MySQLPID} = `pidof mysqld`);
-	@{$sys{ulimit}} = split (/\s+/,`grep "open files" /proc/$sys{MySQLPID}/limits`); 
-	$sys{ulimit} = @{$sys{ulimit}}[3];
-	$sys{MySQLOpenFiles} = `lsof -p $sys{MySQLPID} 2>/dev/null | wc -l`;
-	chomp(%sys);
+        chomp($sys{MySQLPID} = `pidof mysqld`);
+        @{$sys{ulimit}} = split (/\s+/,`grep "open files" /proc/$sys{MySQLPID}/limits`);
+        $sys{ulimit} = @{$sys{ulimit}}[3];
+        $sys{MySQLOpenFiles} = `lsof -p $sys{MySQLPID} 2>/dev/null | wc -l`;
+        chomp(%sys);
 }
 
 sub get_backup_info {
