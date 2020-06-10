@@ -23,7 +23,7 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.18";
+my $version = "2.0.19";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -226,6 +226,7 @@ sub get_memory_usage {
         $mem{MySQLBase} = ($vars{key_buffer_size} + $vars{query_cache_size} + $vars{innodb_buffer_pool_size} + $vars{innodb_additional_mem_pool_size} + $vars{innodb_log_buffer_size});
         $mem{MySQLPerConnection} = ($vars{read_buffer_size} + $vars{read_rnd_buffer_size} + $vars{sort_buffer_size} + $vars{join_buffer_size} + $vars{binlog_cache_size} + $vars{thread_stack});
 	$mem{MySQLPossibleMaxConnections} = int ((((($mem{MemTotal} * 1024) / 100) * 90) - $mem{MySQLBase}) / $mem{MySQLPerConnection});
+	## $mem{MySQLPossibleMaxConnections} > ($vars{max_connections} + 100) ? ($vars{max_connections} + 100) : $mem{MySQLMaxPossibleConnections};
         $mem{MySQLMaxConnectionConfigured} = ($mem{MySQLPerConnection} * $vars{max_connections});
         $mem{MySQLMaxConnectionUsed} = ($mem{MySQLPerConnection} * $stats{Max_used_connections});
         $mem{MySQLMaxConfigured} = short(($mem{MySQLBase} + $mem{MySQLMaxConnectionConfigured}), 1);
@@ -692,6 +693,7 @@ sub prep_summary {
         if ($stats{Max_used_connections} >= $vars{max_connections}) {
                 push @{$summary{Database}},  "$bp MySQL has reached the maximum number of concurrent connections ($vars{max_connections}).\n";
                 if ($mem{MySQLPossibleMaxConnections} >= $vars{max_connections}) {
+			if ($mem{MySQLPossibleMaxConnections} >= ($vars{max_connections} + 100)) { $mem{MySQLPossibleMaxConnections} = ($vars{max_connections} + 100); }
                         push @{$summary{Database}}, "    Based on the current settings the max_connections could be increased up to $mem{MySQLPossibleMaxConnections}.\n";
                 } else {
                         push @{$summary{Database}}, "    There are insufficient resources to increase the max_connections.\n";
