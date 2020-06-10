@@ -23,7 +23,7 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.17";
+my $version = "2.0.18";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -738,13 +738,13 @@ sub prep_summary {
 	if ($stats{Innodb_log_waits} > 0) {
 		push @{$summary{Database}}, "$bp There have been $stats{Innodb_log_waits} innodb_log_waits. Consider increasing the innodb_log_buffer_size.\n";
 	}
-        if (defined $db{replication}{Slave_IO_Running} && $db{replication}{Slave_IO_Running} =~ /No/)   {
+        if (defined $db{replication}{Slave_IO_Running} && $db{replication}{Slave_IO_Running} !~ /Yes/)   {
                 push @{$summary{Database}}, "$bp Replication has stopped.\n"
                 . "    Slave_IO_Running: $db{replication}{Slave_IO_Running}\n"
                 . "    Error Number: $db{replication}{Last_IO_Errno}\n"
                 . "    Error Message:  $db{replication}{Last_IO_Error}\n";
         }
-        if (defined $db{replication}{Slave_SQL_Running} && $db{replication}{Slave_SQL_Running} =~ /No/) {
+        if (defined $db{replication}{Slave_SQL_Running} && $db{replication}{Slave_SQL_Running} !~ /Yes/) {
                 push @{$summary{Database}}, "$bp Replication has stopped.\n"
                 . "    Slave_SQL_Running: $db{replication}{Slave_SQL_Running}\n"
                 . "    Error Number: $db{replication}{Last_SQL_Errno}\n"
