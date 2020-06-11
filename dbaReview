@@ -23,7 +23,7 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.20";
+my $version = "2.0.21";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -408,6 +408,14 @@ sub get_backup_info {
 				}
 				$dow = join(",",@{$sys{CronDoW}});
 			}
+			if ($dow =~ /-/) { 
+				my ($d1,$d2) = split(/-/, $dow);
+				my $dow1 = $sys{DaysOfWeek}[$d1];
+				my $dow2 = $sys{DaysOfWeek}[$d2];
+				$dow = "$dow1 - $dow2";
+			}
+
+
                         elsif ($dow =~ /\d/) { $dow = $sys{DaysOfWeek}[$dow]; } else { $dow = $sys{DaysOfWeek}[8]; }
 			if ($hour =~ /\//) { 
 				my @entry = split(/\//, $hour); 
