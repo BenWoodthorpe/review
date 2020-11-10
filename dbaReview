@@ -23,7 +23,7 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.22";
+my $version = "2.0.23";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -99,6 +99,7 @@ sub get_mycnf {
                         $mycnf{$1} = $2;
                 }
         }
+	$mycnf{password} =~ s/'//g;
         $mycnf{pass} ||= $mycnf{password} if exists $mycnf{password};
         close MYCNF;
 }
@@ -315,12 +316,13 @@ sub get_cpu_usage {
 	}
 
 ########
+	my $domfile = `date +%d`;
+	chomp($domfile);
 	unless ( -d "/var/log/sa" ) { return;}
+	unless ( -e "/var/log/sa/sa$domfile") { return;}
         opendir my $dir, "/var/log/sa" or return;
         my @sar_logs = readdir $dir;
         closedir $dir;
-# Check if there were any logs. If not return
-	unless (@sar_logs) { return;}
         foreach my $log(@sar_logs) {
                 next if ($log =~ /sar/);
                 next if ($log =~ /^\.\.?$/);
