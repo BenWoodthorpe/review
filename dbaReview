@@ -23,7 +23,7 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.21";
+my $version = "2.0.22";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -319,6 +319,8 @@ sub get_cpu_usage {
         opendir my $dir, "/var/log/sa" or return;
         my @sar_logs = readdir $dir;
         closedir $dir;
+# Check if there were any logs. If not return
+	unless (@sar_logs) { return;}
         foreach my $log(@sar_logs) {
                 next if ($log =~ /sar/);
                 next if ($log =~ /^\.\.?$/);
