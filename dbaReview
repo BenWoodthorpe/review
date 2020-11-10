@@ -23,7 +23,7 @@ use warnings;
 use DBI;
 use Getopt::Long;
 
-my $version = "2.0.23";
+my $version = "2.0.24";
 
 
 our (%mycnf, %mem, %opt, $dbh, %vars, %stats, %fsinfo, %cpu, %sys, %db, %f, %summary); 
@@ -99,7 +99,7 @@ sub get_mycnf {
                         $mycnf{$1} = $2;
                 }
         }
-	$mycnf{password} =~ s/'//g;
+	$mycnf{password} =~ s/^'(.*)'$/$1/g;
         $mycnf{pass} ||= $mycnf{password} if exists $mycnf{password};
         close MYCNF;
 }
